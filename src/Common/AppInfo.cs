@@ -1,0 +1,23 @@
+using System;
+using System.IO;
+
+[assembly: System.Reflection.AssemblyVersion(AutoMacro.AppInfo.AssemblyVersion)]
+namespace AutoMacro
+{
+    internal static class AppInfo
+    {
+        internal const string AssemblyVersion = "1.0.0.0";
+        internal static string Version { get { return typeof(AppInfo).Assembly.GetName().Version.ToString(3); } }
+        internal static string SettingsPath { get { return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "settings.json"); } }
+        internal static string LibraryPath { get { return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "MacroLibrary.json"); } }
+    }
+    internal static class RecoveryFiles
+    {
+        internal static string Preserve(string path)
+        {
+            if (!File.Exists(path)) return null;
+            string backup = path + ".recovery-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".bak";
+            File.Copy(path, backup, false); return backup;
+        }
+    }
+}
