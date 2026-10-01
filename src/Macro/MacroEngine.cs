@@ -44,8 +44,13 @@ namespace AutoMacro
         internal bool RepeatForever;
         internal List<MacroAction> Actions = new List<MacroAction>();
     }
+    internal sealed class LibraryLimitException : FormatException
+    {
+        internal LibraryLimitException() : base(L.T("저장 한도를 초과했습니다. 최대 1,000개 매크로, 전체 500,000개 동작까지 저장할 수 있습니다.")) { }
+    }
     internal sealed class MacroLibrary
     {
+        internal const int MaxMacros = 1000, MaxActionsPerMacro = 200512, MaxTotalActions = 500000;
         internal Keys RecordKey = Keys.F7, PlayKey = Keys.F9, StopKey = Keys.F8;
         internal List<SavedMacro> Items = new List<SavedMacro>();
         internal static bool ValidShortcut(Keys key)
@@ -62,13 +67,28 @@ namespace AutoMacro
         }
         internal string CheckName(string name, SavedMacro except)
         {
-            if (String.IsNullOrWhiteSpace(name) || name.Trim().Length > 80) return L.T("이름은 공백을 제외하고 1~80자로 입력하세요.");
-            foreach (char c in name) if (Char.IsControl(c)) return L.T("이름에 제어 문자를 넣을 수 없습니다.");
+            string invalid = ValidateName(name); if (invalid != null) return invalid;
             foreach (SavedMacro item in Items) if (item != except && String.Equals(item.Name, name.Trim(), StringComparison.OrdinalIgnoreCase)) return L.T("같은 이름이 있습니다. 다른 이름을 입력하세요.");
             return null;
         }
+        static string ValidateName(string name)
+        {
+            if (String.IsNullOrWhiteSpace(name) || name.Trim().Length > 80) return L.T("이름은 공백을 제외하고 1~80자로 입력하세요.");
+            foreach (char c in name) if (Char.IsControl(c)) return L.T("이름에 제어 문자를 넣을 수 없습니다.");
+            return null;
+        }
+        internal void ValidateCapacity(IList<SavedMacro> additions = null)
+        {
+            int count = Items.Count, actions = 0;
+            foreach (SavedMacro item in Items)
+            { if (item.Actions.Count > MaxActionsPerMacro || item.Actions.Count > MaxTotalActions - actions) throw new LibraryLimitException(); actions += item.Actions.Count; }
+            if (additions != null) foreach (SavedMacro item in additions)
+            { if (++count > MaxMacros || item.Actions.Count > MaxActionsPerMacro || item.Actions.Count > MaxTotalActions - actions) throw new LibraryLimitException(); actions += item.Actions.Count; }
+            if (count > MaxMacros) throw new LibraryLimitException();
+        }
         internal void Save(string path, bool backup = true)
         {
+            ValidateCapacity();
             DataNode root = new DataNode("MacroLibrary", new DataField("version", 1), new DataField("record", (int)RecordKey), new DataField("play", (int)PlayKey), new DataField("stop", (int)StopKey));
             foreach (SavedMacro item in Items)
             {
@@ -87,7 +107,7 @@ namespace AutoMacro
             if (root.Name != "MacroLibrary" || (int)root.Attribute("version") != 1) throw new FormatException("Unsupported library");
             library.RecordKey = (Keys)(int)root.Attribute("record"); library.PlayKey = (Keys)(int)root.Attribute("play"); library.StopKey = (Keys)(int)root.Attribute("stop");
             if (library.ValidateShortcut(0, library.RecordKey) != null || library.ValidateShortcut(1, library.PlayKey) != null || library.ValidateShortcut(2, library.StopKey) != null) throw new FormatException("Invalid shortcuts");
-            HashSet<string> ids = new HashSet<string>();
+            HashSet<Guid> ids = new HashSet<Guid>(); HashSet<string> names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (DataNode node in root.Elements("Macro"))
             {
                 SavedMacro item = new SavedMacro { Id = (string)node.Attribute("id"), Name = (string)node.Attribute("name"), Created = DateTime.Parse((string)node.Attribute("created"), null, System.Globalization.DateTimeStyles.RoundtripKind), Duration = (long)node.Attribute("duration") };
@@ -96,7 +116,7 @@ namespace AutoMacro
                 item.RepeatDelayMs = (int?)node.Attribute("repeatDelayMs") ?? 0;
                 if (item.RepeatCount < 1 || item.RepeatCount > 1000000 || item.RepeatDelayMs < 0 || item.RepeatDelayMs > 86400000) throw new FormatException("Invalid repeat settings");
                 Guid id;
-                if (!Guid.TryParse(item.Id, out id) || !ids.Add(item.Id) || library.CheckName(item.Name, null) != null || item.Duration < 0 || item.Duration > 86400000) throw new FormatException("Invalid macro");
+                if (!Guid.TryParse(item.Id, out id) || !ids.Add(id) || ValidateName(item.Name) != null || !names.Add(item.Name.Trim()) || item.Duration < 0 || item.Duration > 86400000) throw new FormatException("Invalid macro");
                 long previous = 0;
                 foreach (DataNode element in node.Elements("Action"))
                 {
@@ -105,7 +125,7 @@ namespace AutoMacro
                         ((action.Kind == ActionKind.KeyDown || action.Kind == ActionKind.KeyUp) && (action.Code < 8 || action.Code > 254)) ||
                         ((action.Kind == ActionKind.MouseDown || action.Kind == ActionKind.MouseUp) && (action.Code < 1 || action.Code > 5))) throw new FormatException("Invalid action");
                     item.Actions.Add(action); previous = action.At;
-                    if (item.Actions.Count > 200512) throw new FormatException("Too many actions");
+                    if (item.Actions.Count > MaxActionsPerMacro) throw new LibraryLimitException();
                 }
                 if (item.Actions.Count == 0) throw new FormatException("Empty macro");
                 library.Items.Add(item);

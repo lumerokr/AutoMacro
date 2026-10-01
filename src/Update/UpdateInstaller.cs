@@ -69,14 +69,8 @@ namespace AutoMacro
                             using (Process next = Process.Start(new ProcessStartInfo(target, "--update-ready " + UpdateService.Quote(folder)) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(target) }))
                             {
                                 if (next == null) throw new IOException();
-                                Stopwatch clock = Stopwatch.StartNew();
-                                while (!File.Exists(ready))
-                                {
-                                    if (next.HasExited) throw new IOException();
-                                    if (clock.ElapsedMilliseconds > 30000)
-                                    { next.Kill(); if (!next.WaitForExit(5000)) throw new IOException(); throw new IOException(); }
-                                    Thread.Sleep(100);
-                                }
+                                WaitForStartup(folder, delegate { return next.HasExited; }, delegate
+                                { next.Kill(); if (!next.WaitForExit(5000)) throw new IOException(); }, 30000);
                             }
                         });
                         break;
@@ -105,13 +99,34 @@ namespace AutoMacro
                 return 1;
             }
         }
-        internal static void SignalReady(string folder)
+        internal static void WaitForStartup(string folder, Func<bool> exited, Action terminate, int timeoutMs)
+        {
+            Stopwatch clock = Stopwatch.StartNew();
+            while (!File.Exists(Path.Combine(folder, "ready")))
+            {
+                if (exited()) throw new IOException();
+                // Pause only for interactive startup; exiting still counts as failure.
+                if (File.Exists(Path.Combine(folder, "awaiting-user"))) clock.Restart();
+                else if (clock.ElapsedMilliseconds > timeoutMs) { terminate(); throw new IOException(); }
+                Thread.Sleep(Math.Min(100, Math.Max(1, timeoutMs / 10)));
+            }
+        }
+        static string StartupFolder(string folder)
         {
             string target = typeof(AppInfo).Assembly.Location;
             string full = Path.GetFullPath(folder).TrimEnd(Path.DirectorySeparatorChar);
             if (!String.Equals(Path.GetDirectoryName(full), Path.GetDirectoryName(target), StringComparison.OrdinalIgnoreCase) ||
-                !System.Text.RegularExpressions.Regex.IsMatch(Path.GetFileName(full), @"^\.automacro-update-[a-f0-9]{32}$") || !File.Exists(Path.Combine(full, "previous.exe"))) return;
-            File.WriteAllText(Path.Combine(full, "ready"), AppInfo.Version);
+                !System.Text.RegularExpressions.Regex.IsMatch(Path.GetFileName(full), @"^\.automacro-update-[a-f0-9]{32}$") || !File.Exists(Path.Combine(full, "previous.exe"))) throw new UpdateFailure(UpdateService.Invalid);
+            return full;
+        }
+        internal static void SetAwaitingUser(string folder, bool awaiting)
+        {
+            string marker = Path.Combine(StartupFolder(folder), "awaiting-user");
+            if (awaiting) File.WriteAllText(marker, ""); else File.Delete(marker);
+        }
+        internal static void SignalReady(string folder)
+        {
+            File.WriteAllText(Path.Combine(StartupFolder(folder), "ready"), AppInfo.Version);
         }
         internal static void CleanCompleted()
         {

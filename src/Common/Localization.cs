@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -95,6 +95,12 @@ namespace AutoMacro
         }
         internal static readonly Dictionary<string, string[]> Messages = new Dictionary<string, string[]>
         {
+            { "처리 중", new string[] { "Processing", "処理中" } },
+            { "매크로 파일을 처리하고 있습니다.", new string[] { "Processing the macro file.", "マクロファイルを処理しています。" } },
+            { "저장 한도를 초과했습니다. 최대 1,000개 매크로, 전체 500,000개 동작까지 저장할 수 있습니다.", new string[] { "Storage limit exceeded: up to 1,000 macros and 500,000 actions in total.", "保存上限を超えました。マクロ1,000件、動作合計500,000件まで保存できます。" } },
+            { "정지 중…", new string[] { "Stopping…", "停止中…" } },
+            { "누르기 없이 떼기 동작이 있습니다. 입력 짝을 맞춘 후 저장하세요.", new string[] { "A release has no matching press. Fix the input pairs before saving.", "押す操作のない離す操作があります。入力の組を修正してから保存してください。" } },
+            { "떼기 없는 누르기 동작이 있습니다. 입력 짝을 맞춘 후 저장하세요.", new string[] { "A press has no matching release. Fix the input pairs before saving.", "離す操作のない押す操作があります。入力の組を修正してから保存してください。" } },
             { "업데이트", new string[] { "Updates", "アップデート" } },
             { "새 버전 감지", new string[] { "New version available", "新バージョンを検出" } },
             { "나중에", new string[] { "Later", "後で" } },
@@ -367,99 +373,5 @@ namespace AutoMacro
             { "이전 편집으로 되돌렸습니다.", new string[] { "Previous edit restored.", "前の編集に戻しました。" } },
             { "언어 설정을 저장하지 못했습니다. 설정 초기화로 복구하거나 폴더 권한을 확인하세요.", new string[] { "Could not save language. Reset settings to recover, or check folder permissions.", "言語を保存できません。設定を初期化して復旧するか、フォルダー権限を確認してください。" } },
         };
-    }
-    internal class LanguageDialog : Form
-    {
-        internal string SelectedLanguage;
-        internal LanguageDialog(bool settings = false)
-        {
-            Text = L.T(settings ? "설정" : "언어 설정"); ClientSize = new System.Drawing.Size(settings ? 400 : 330, settings ? 314 : 216);
-            if (settings)
-            {
-                Label version = new Label { Text = String.Format(L.T("현재 버전: {0}"), AppInfo.Version), ForeColor = Theme.Accent };
-                version.SetBounds(24, 22, 352, 30); Controls.Add(version);
-                Label heading = new Label { Text = L.T("언어 설정") }; heading.SetBounds(24, 69, 352, 28); Controls.Add(heading);
-            }
-            Font = new System.Drawing.Font("맑은 고딕", 10); BackColor = Theme.Background; ForeColor = Theme.Ink;
-            FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = MinimizeBox = false; StartPosition = FormStartPosition.CenterParent;
-            string[] languages = { "ko", "en", "ja" }, names = { "한국어", "English", "日本語" };
-            for (int i = 0; i < languages.Length; i++)
-            {
-                string language = languages[i];
-                Button button = new ModernButton { Text = names[i] + (language == L.Current ? "  ✓" : ""), Tag = language };
-                button.SetBounds(24, (settings ? 112 : 24) + i * 58, settings ? 352 : 282, 44); Theme.Button(button, language == L.Current); Controls.Add(button);
-                button.Click += delegate { SelectedLanguage = language; DialogResult = DialogResult.OK; Close(); };
-            }
-        }
-    }
-    internal sealed class SettingsDialog : LanguageDialog
-    {
-        internal PreparedUpdate Prepared;
-        internal readonly Button LanguageTab, OtherTab;
-        readonly List<Control> languageControls = new List<Control>(), otherControls = new List<Control>();
-        internal SettingsDialog(Action reset = null, Action restore = null) : base(true)
-        {
-            ClientSize = new System.Drawing.Size(400, 268);
-            List<Control> original = new List<Control>(); foreach (Control control in Controls) original.Add(control);
-            int languageIndex = 0;
-            foreach (Control control in original)
-            {
-                if (control is Button)
-                { control.SetBounds(24, 84 + languageIndex++ * 58, 352, 44); languageControls.Add(control); }
-                else { Controls.Remove(control); control.Dispose(); }
-            }
-            LanguageTab = new ModernButton { Text = L.T("언어 설정") }; OtherTab = new ModernButton { Text = L.T("기타 설정") };
-            LanguageTab.SetBounds(24, 24, 170, 40); OtherTab.SetBounds(206, 24, 170, 40);
-            Controls.Add(LanguageTab); Controls.Add(OtherTab);
-            LanguageTab.Click += delegate { SelectPage(true); }; OtherTab.Click += delegate { SelectPage(false); };
-            Button resetButton = new ModernButton { Text = L.T("설정 초기화"), Enabled = reset != null }, restoreButton = new ModernButton { Text = L.T("매크로 백업 복원"), Enabled = restore != null };
-            resetButton.SetBounds(24, 84, 352, 44); restoreButton.SetBounds(24, 142, 352, 44);
-            Theme.Button(resetButton, false); Theme.Button(restoreButton, false); Controls.Add(resetButton); Controls.Add(restoreButton);
-            otherControls.Add(resetButton); otherControls.Add(restoreButton);
-            resetButton.Click += delegate { reset(); DialogResult = DialogResult.Cancel; Close(); };
-            restoreButton.Click += delegate { restore(); DialogResult = DialogResult.Cancel; Close(); };
-            Button update = new ModernButton { Text = L.T("업데이트") };
-            update.SetBounds(24, 200, 352, 44); Theme.Button(update, true); Controls.Add(update); otherControls.Add(update);
-            update.Click += delegate
-            {
-                using (UpdateDialog dialog = new UpdateDialog())
-                    if (dialog.ShowDialog(this) == DialogResult.OK)
-                    { Prepared = dialog.Prepared; DialogResult = DialogResult.Abort; Close(); }
-            };
-            SelectPage(false);
-        }
-        void SelectPage(bool language)
-        {
-            foreach (Control control in languageControls) control.Visible = language;
-            foreach (Control control in otherControls) control.Visible = !language;
-            Theme.Button(LanguageTab, language); Theme.Button(OtherTab, !language);
-        }
-    }
-    internal sealed class SettingsButton : Button
-    {
-        bool hover;
-        protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
-        protected override void OnMouseLeave(EventArgs e) { hover = false; Invalidate(); base.OnMouseLeave(e); }
-        protected override void OnPaint(PaintEventArgs e)
-        {
-            e.Graphics.Clear(Theme.Background); e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-            using (System.Drawing.Brush fill = new System.Drawing.SolidBrush(hover ? Theme.Field : Theme.Card)) e.Graphics.FillEllipse(fill, 0, 0, Width - 1, Height - 1);
-            float side = Math.Min(Width, Height), cx = Width / 2f, cy = Height / 2f;
-            System.Drawing.PointF[] teeth = new System.Drawing.PointF[32];
-            for (int i = 0; i < teeth.Length; i++)
-            {
-                double angle = i * Math.PI * 2 / teeth.Length - Math.PI / 2;
-                float radius = side * (i % 4 == 1 || i % 4 == 2 ? .32f : .24f);
-                teeth[i] = new System.Drawing.PointF(cx + radius * (float)Math.Cos(angle), cy + radius * (float)Math.Sin(angle));
-            }
-            using (System.Drawing.Pen pen = new System.Drawing.Pen(Enabled ? Theme.Accent : Theme.Muted, Math.Max(1.4f, side / 22)))
-            {
-                pen.LineJoin = System.Drawing.Drawing2D.LineJoin.Round;
-                e.Graphics.DrawPolygon(pen, teeth);
-                float radius = side * .105f;
-                e.Graphics.DrawEllipse(pen, cx - radius, cy - radius, radius * 2, radius * 2);
-            }
-            if (Focused && ShowFocusCues) using (System.Drawing.Pen pen = new System.Drawing.Pen(Theme.Accent)) e.Graphics.DrawEllipse(pen, 1, 1, Width - 3, Height - 3);
-        }
     }
 }

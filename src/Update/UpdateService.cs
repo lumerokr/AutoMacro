@@ -203,7 +203,7 @@ namespace AutoMacro
             if (folder == null || !Regex.IsMatch(Path.GetFileName(folder), @"^\.automacro-update-[a-f0-9]{32}$")) return;
             try
             {
-                foreach (string name in new string[] { AssetName, "payload.exe", "installer.exe", "ready" })
+                foreach (string name in new string[] { AssetName, "payload.exe", "installer.exe", "ready", "awaiting-user" })
                 { string path = Path.Combine(folder, name); if (File.Exists(path)) File.Delete(path); }
                 Directory.Delete(folder, false);
             }

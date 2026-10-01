@@ -17,6 +17,60 @@ namespace AutoMacro
         static T Field<T>(object owner, string name) { return (T)owner.GetType().GetField(name, Private).GetValue(owner); }
         static void Set(object owner, string name, object value) { owner.GetType().GetField(name, Private).SetValue(owner, value); }
         static object Invoke(object owner, string name, params object[] values) { return owner.GetType().GetMethod(name, Private).Invoke(owner, values); }
+        static void PumpUntil(Func<bool> done, string name)
+        {
+            Stopwatch clock = Stopwatch.StartNew();
+            while (!done()) { Application.DoEvents(); Thread.Sleep(5); Check(clock.ElapsedMilliseconds < 5000, name); }
+        }
+        static void VerifyResponsiveStop()
+        {
+            using (ManualResetEvent entered = new ManualResetEvent(false))
+            using (ManualResetEvent release = new ManualResetEvent(false))
+            using (MainForm form = new MainForm(false))
+            {
+                form.SystemInput = delegate(Native.Input[] inputs) { entered.Set(); release.WaitOne(); return (uint)inputs.Length; };
+                form.Show(); Application.DoEvents(); Set(form, "hotkeysReady", true);
+                Invoke(form, "StartMacro"); Check(entered.WaitOne(2000), "clicker entered blocked input");
+                try
+                {
+                    Stopwatch watch = Stopwatch.StartNew(); Invoke(form, "StopMacro", "test stop");
+                    Check(watch.ElapsedMilliseconds < 500 && Field<bool>(form, "running"), "clicker stop returns while cleanup is pending");
+                    InputJob previous = Field<InputJob>(form, "worker"); Invoke(form, "StartMacro");
+                    Check(Field<InputJob>(form, "worker") == previous, "clicker cannot restart during cleanup");
+                    bool responsive = false; form.BeginInvoke((Action)delegate { responsive = true; }); Application.DoEvents();
+                    Check(responsive, "UI processes messages during clicker stop");
+                    form.Close(); Check(!form.IsDisposed, "close waits without blocking for input cleanup");
+                }
+                finally { release.Set(); }
+                PumpUntil(delegate { return form.IsDisposed; }, "deferred close completes");
+            }
+            using (ManualResetEvent entered = new ManualResetEvent(false))
+            using (ManualResetEvent release = new ManualResetEvent(false))
+            using (MainForm form = new MainForm(false))
+            {
+                form.Show(); Invoke(form, "SelectPage", true); Application.DoEvents();
+                MacroWorkspace page = Field<MacroWorkspace>(form, "macroWorkspace");
+                SavedMacro macro = ManagementSample(); macro.RepeatForever = true;
+                Field<MacroLibrary>(page, "library").Items.Add(macro); Invoke(page, "RefreshList", macro.Id);
+                int inputs = 0;
+                page.PlaybackSink = delegate(Native.Input input)
+                { if (input.type != 1) return; Interlocked.Increment(ref inputs); if ((input.data.keyboard.flags & 2) == 0) { entered.Set(); release.WaitOne(); } };
+                Invoke(page, "PlaySelected"); Check(entered.WaitOne(2000), "macro entered blocked key press");
+                try
+                {
+                    Stopwatch watch = Stopwatch.StartNew(); Invoke(page, "StopPlayback");
+                    Check(watch.ElapsedMilliseconds < 500 && page.Busy, "macro stop keeps cleanup busy without waiting");
+                    InputJob previous = Field<InputJob>(page, "player"); Invoke(page, "PlaySelected");
+                    Check(Field<InputJob>(page, "player") == previous, "macro cannot restart during cleanup");
+                    bool responsive = false; form.BeginInvoke((Action)delegate { responsive = true; }); Application.DoEvents();
+                    Check(responsive, "UI processes messages during macro stop");
+                    Invoke(form, "SelectPage", false); Check(Field<bool>(form, "macroPage"), "page change waits for held-key release");
+                }
+                finally { release.Set(); }
+                PumpUntil(delegate { return !page.Busy && !Field<bool>(form, "macroPage"); }, "macro cleanup and deferred page change");
+                Check(inputs == 2, "cancel releases held key exactly once before switching pages"); form.Close();
+            }
+        }
         static void VerifyHoldWindow()
         {
             string path = Path.Combine(Path.GetTempPath(), "AutoMacro-hold-" + Guid.NewGuid().ToString("N") + ".json");
@@ -108,10 +162,12 @@ namespace AutoMacro
                         Invoke(form, "StartMacro");
                         for (int i = 0; i < 3; i++) Check(receiver.Received.WaitOne(1500), "fixed worker repeats");
                         Invoke(form, "StopMacro", "검증 중지");
+                        PumpUntil(delegate { return !Field<bool>(form, "running"); }, "fixed clicker stops");
                         Check(captures == 1 && globalInputs == 0, "target captured once with no global input fallback");
                         Check(receiver.LastPosition == ClickTarget.Coordinates(23, 45), "repeat coordinates remain fixed");
                         Field<CheckBox>(form, "holdWindow").Checked = false;
                         Invoke(form, "StartMacro"); Thread.Sleep(50); Invoke(form, "StopMacro", "검증 중지");
+                        PumpUntil(delegate { return !Field<bool>(form, "running"); }, "normal clicker stops");
                         Check(globalInputs > 0 && captures == 1, "off restores original input path");
                         form.Close();
                     }
@@ -259,6 +315,15 @@ namespace AutoMacro
         }
         static void VerifyEditing()
         {
+            SavedMacro balanced = ManagementSample(); Check(MacroEditing.PairError(balanced) == null, "recorded input pairs are valid");
+            SavedMacro missingPress = MacroEditing.Copy(balanced, false); MacroEditing.Delete(missingPress, new int[] { 1 });
+            Check(MacroEditing.PairError(missingPress) != null, "deleting key press detects orphan release");
+            SavedMacro missingRelease = MacroEditing.Copy(balanced, false); MacroEditing.Delete(missingRelease, new int[] { 2 });
+            Check(MacroEditing.PairError(missingRelease) != null, "deleting key release detects held input");
+            MacroEditing.Delete(missingRelease, new int[] { 1 }); Check(MacroEditing.PairError(missingRelease) == null, "deleting both sides leaves valid movement-only macro");
+            balanced.Actions.Insert(2, balanced.Actions[1].Copy()); Check(MacroEditing.PairError(balanced) == null, "keyboard auto-repeat remains valid");
+            balanced.Actions[1].Kind = ActionKind.MouseDown; balanced.Actions[1].Code = 4;
+            Check(MacroEditing.PairError(balanced) != null, "mouse and keyboard pairs are distinct");
             SavedMacro source = ManagementSample(), edited = MacroEditing.Copy(source, false);
             Check(MacroEditing.SetDelay(edited, 1, 250) && edited.Actions[1].At == 260 && edited.Actions[2].At == 360 && edited.Duration == 460, "delay shifts later actions and trailing duration");
             Check(source.Actions[1].At == 100 && source.Duration == 300, "editor deep copy preserves original");
@@ -334,7 +399,7 @@ namespace AutoMacro
                     Invoke(page, "UpdateUI");
                     Check(Field<long>(page, "waitDeadline") > 0 && Field<Label>(page, "draftInfo").Text.Contains("1/2") && Field<Label>(page, "draftInfo").Text.Contains("다음 반복까지"), "progress shows repeat total and remaining wait");
                     Check(Field<MacroProgress>(page, "progressBar").Visible && Field<MacroProgress>(page, "progressBar").Fraction == .5, "progress bar reaches first completed repeat");
-                    Invoke(page, "StopPlayback"); Check(!Field<MacroProgress>(page, "progressBar").Visible, "emergency stop clears progress");
+                    Invoke(page, "StopPlayback"); PumpUntil(delegate { return !page.Busy; }, "macro emergency stop completes"); Check(!Field<MacroProgress>(page, "progressBar").Visible, "emergency stop clears progress");
                     using (MacroEditorDialog editor = new MacroEditorDialog(current))
                     {
                         editor.Show(form); Application.DoEvents();
@@ -553,7 +618,7 @@ namespace AutoMacro
                     Check(editor.Edited.Actions[1].At == 10 && editor.Edited.Duration == 50 && !editor.Undo.Enabled, "Ctrl Z restores delay and duration");
                     editor.Actions.SelectedIndices.Clear(); editor.Actions.Items[0].Selected = true; editor.Actions.Items[4].Selected = true; editor.DeleteActions.PerformClick();
                     Check(!editor.Save.Enabled && editor.Undo.Enabled, "undo remains available after deleting all actions"); editor.Undo.PerformClick();
-                    Check(editor.Save.Enabled && editor.Edited.Actions.Count == 4 && group.Actions.Count == 4, "undo restores empty edit without modifying source"); editor.Close();
+                    Check(!editor.Save.Enabled && editor.Edited.Actions.Count == 4 && group.Actions.Count == 4, "undo restores orphan input but keeps unsafe save disabled"); editor.Close();
                 }
             }
             finally { foreach (string file in Directory.GetFiles(directory)) File.Delete(file); Directory.Delete(directory); }
@@ -581,6 +646,18 @@ namespace AutoMacro
         }
         internal static void RunUI()
         {
+            FileWorkTests.RunUI();
+            VerifyResponsiveStop();
+            using (MacroEditorDialog editor = new MacroEditorDialog(ManagementSample()))
+            {
+                editor.Show(); Application.DoEvents(); Check(editor.Save.Enabled, "balanced edit can be saved");
+                editor.Actions.Items[2].Selected = true; editor.DeleteActions.PerformClick();
+                Check(!editor.Save.Enabled && MacroEditing.PairError(editor.Edited) != null, "orphan press disables save");
+                editor.Actions.Items[1].Selected = true; editor.DeleteActions.PerformClick();
+                Check(editor.Save.Enabled, "removing both input sides restores saving");
+                editor.Undo.PerformClick(); Check(!editor.Save.Enabled, "undo to invalid input disables saving again");
+                editor.Undo.PerformClick(); Check(editor.Save.Enabled, "undo to original pairs restores saving"); editor.Close();
+            }
             UpdateTests.RunUI();
             VerifyLanguages();
             VerifyManagementUI();
@@ -890,6 +967,26 @@ namespace AutoMacro
         }
         internal static void Run()
         {
+            FileWorkTests.Run();
+            using (ManualResetEvent entered = new ManualResetEvent(false))
+            using (ManualResetEvent release = new ManualResetEvent(false))
+            {
+                InputJob job = new InputJob(delegate(WaitHandle cancel)
+                { entered.Set(); release.WaitOne(); Check(cancel.WaitOne(0), "disposed input job still has live cancellation handle during cleanup"); });
+                try
+                {
+                    Check(entered.WaitOne(2000), "input job started"); job.Stop(); job.Dispose(); job.Dispose();
+                    Check(!job.Completed, "disposal does not wait or report completion early");
+                }
+                finally { release.Set(); }
+                PumpUntil(delegate { return job.Completed; }, "disposed input job finishes safely");
+                Check(job.Error == null, "cancellation handle survives worker cleanup");
+            }
+            using (InputJob job = new InputJob(delegate { throw new IOException("test input failure"); }))
+            {
+                PumpUntil(delegate { return job.Completed; }, "failed input job finishes");
+                Check(job.Error is IOException, "worker failure is reported instead of terminating application");
+            }
             UpdateTests.Run();
             VerifyUnifiedSettings();
             VerifyJsonStorage();

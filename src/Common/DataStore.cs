@@ -43,16 +43,23 @@ namespace AutoMacro
     }
     internal static class DataStore
     {
+        internal const int MaxFileBytes = 150 * 1024 * 1024;
         internal static bool Exists(string path) { return File.Exists(path); }
-        static JavaScriptSerializer Serializer() { return new JavaScriptSerializer { MaxJsonLength = 150 * 1024 * 1024, RecursionLimit = 100 }; }
+        static JavaScriptSerializer Serializer() { return new JavaScriptSerializer { MaxJsonLength = MaxFileBytes, RecursionLimit = 100 }; }
         internal static DataNode Load(string path)
         {
-            if (new FileInfo(path).Length > 150 * 1024 * 1024) throw new FormatException("Data file is too large");
-            Dictionary<string, object> document = Serializer().DeserializeObject(File.ReadAllText(path, Encoding.UTF8)) as Dictionary<string, object>;
+            Dictionary<string, object> document;
+            using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                if (stream.Length > MaxFileBytes) throw new FormatException("Data file is too large");
+                using (StreamReader reader = new StreamReader(stream, Encoding.UTF8))
+                    document = Serializer().DeserializeObject(reader.ReadToEnd()) as Dictionary<string, object>;
+            }
             if (document == null || !document.ContainsKey("type")) throw new FormatException("Invalid JSON document");
             string type = document["type"] as string;
             if (type != "AutoMacro" && type != "MacroLibrary") throw new FormatException("Unknown data type");
-            return Decode(type, document);
+            int actions = 0;
+            return Decode(type, document, ref actions);
         }
         static object Scalar(string value)
         {
@@ -80,7 +87,7 @@ namespace AutoMacro
             }
             return value;
         }
-        static DataNode Decode(string type, Dictionary<string, object> value)
+        static DataNode Decode(string type, Dictionary<string, object> value, ref int actions)
         {
             DataNode element = new DataNode(type);
             foreach (KeyValuePair<string, object> pair in value)
@@ -91,11 +98,17 @@ namespace AutoMacro
                     if ((type != "MacroLibrary" || pair.Key != "macros") && (type != "Macro" || pair.Key != "actions")) throw new FormatException("Invalid data array");
                     IList children = pair.Value as IList;
                     if (children == null) throw new FormatException("Invalid data array");
+                    if (pair.Key == "macros" && children.Count > MacroLibrary.MaxMacros) throw new LibraryLimitException();
+                    if (pair.Key == "actions")
+                    {
+                        if (children.Count > MacroLibrary.MaxActionsPerMacro || children.Count > MacroLibrary.MaxTotalActions - actions) throw new LibraryLimitException();
+                        actions += children.Count;
+                    }
                     foreach (object child in children)
                     {
                         Dictionary<string, object> entry = child as Dictionary<string, object>;
                         if (entry == null) throw new FormatException("Invalid data entry");
-                        element.Add(Decode(pair.Key == "macros" ? "Macro" : "Action", entry));
+                        element.Add(Decode(pair.Key == "macros" ? "Macro" : "Action", entry, ref actions));
                     }
                 }
                 else
@@ -114,6 +127,7 @@ namespace AutoMacro
             try
             {
                 File.WriteAllText(temp, Pretty(Serializer().Serialize(Encode(value))), new UTF8Encoding(false));
+                if (new FileInfo(temp).Length > MaxFileBytes) throw new LibraryLimitException();
                 if (File.Exists(path)) File.Replace(temp, path, backup ? path + ".bak" : null); else File.Move(temp, path);
             }
             finally { if (File.Exists(temp)) File.Delete(temp); }

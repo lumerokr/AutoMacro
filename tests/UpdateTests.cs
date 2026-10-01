@@ -67,18 +67,71 @@ namespace AutoMacro
                 File.WriteAllText(settings, "test preferences"); File.WriteAllText(library, "test saved macros");
                 string settingsHash = UpdateService.Hash(settings), libraryHash = UpdateService.Hash(library);
                 bool failed = false;
-                try { UpdateService.ReplaceAndStart(payload, target, backup, delegate { throw new IOException("Simulated startup failure"); }); } catch (IOException) { failed = true; }
+                try { UpdateService.ReplaceAndStart(payload, target, backup, delegate
+                { UpdateInstaller.WaitForStartup(folder, delegate { return true; }, delegate { }, 50); }); } catch (IOException) { failed = true; }
                 Check(failed && File.ReadAllText(target) == "old executable", "failed launch rolls back executable");
                 Check(!File.Exists(backup), "rollback consumes backup");
                 File.WriteAllText(payload, "new executable"); bool started = false;
                 UpdateService.ReplaceAndStart(payload, target, backup, delegate { started = true; });
                 Check(started && File.ReadAllText(target) == "new executable" && File.ReadAllText(backup) == "old executable", "replacement and backup succeed");
                 Check(UpdateService.Hash(settings) == settingsHash && UpdateService.Hash(library) == libraryHash, "user data preserved during replacement and rollback");
+                string awaiting = Path.Combine(folder, "awaiting-user"), ready = Path.Combine(folder, "ready");
+                File.WriteAllText(awaiting, "");
+                Thread user = new Thread(delegate()
+                {
+                    Thread.Sleep(200); File.WriteAllText(ready, "test-ready"); File.Delete(awaiting);
+                });
+                user.Start();
+                try { UpdateInstaller.WaitForStartup(folder, delegate { return false; }, delegate { throw new Exception("User notice was incorrectly timed out"); }, 50); }
+                finally { user.Join(); }
+                Check(File.Exists(backup), "pending notice preserves previous version backup"); File.Delete(ready);
+                bool terminated = false; failed = false;
+                try { UpdateInstaller.WaitForStartup(folder, delegate { return false; }, delegate { terminated = true; }, 20); } catch (IOException) { failed = true; }
+                Check(failed && terminated, "unresponsive startup still times out");
+                File.WriteAllText(awaiting, ""); failed = false;
+                try { UpdateInstaller.WaitForStartup(folder, delegate { return true; }, delegate { }, 50); } catch (IOException) { failed = true; }
+                Check(failed, "exiting while user notice is open is a failed update");
             }
             finally { Directory.Delete(folder, true); }
         }
         internal static void RunUI()
         {
+            string stage = Path.Combine(Path.GetDirectoryName(typeof(AppInfo).Assembly.Location), ".automacro-update-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(stage);
+            try
+            {
+                File.WriteAllText(Path.Combine(stage, "previous.exe"), "startup marker test");
+                UpdateInstaller.SetAwaitingUser(stage, true);
+                Check(File.Exists(Path.Combine(stage, "awaiting-user")) && !File.Exists(Path.Combine(stage, "ready")), "user notice does not confirm installation");
+                UpdateInstaller.SetAwaitingUser(stage, false);
+                using (MainForm form = new MainForm(false))
+                {
+                    Program.AfterMainShown(form, delegate { UpdateInstaller.SignalReady(stage); });
+                    Check(!File.Exists(Path.Combine(stage, "ready")), "ready marker absent before main startup");
+                    form.Shown += delegate { Check(!File.Exists(Path.Combine(stage, "ready")), "ready marker absent during main initialization"); };
+                    form.Show(); PumpUntil(delegate { return File.Exists(Path.Combine(stage, "ready")); }, "real ready marker");
+                    Check(File.ReadAllText(Path.Combine(stage, "ready")) == AppInfo.Version && File.Exists(Path.Combine(stage, "previous.exe")), "shown main signals current version while backup remains intact"); form.Close();
+                }
+                using (Form form = new Form())
+                {
+                    Program.AfterMainShown(form, delegate { throw new IOException("Simulated handshake failure"); });
+                    form.Show(); PumpUntil(delegate { return form.IsDisposed; }, "failed handshake closes new application");
+                }
+                Reject(delegate { UpdateInstaller.SignalReady(Path.Combine(stage, "invalid")); }, "invalid handshake location rejected");
+            }
+            finally
+            {
+                foreach (string name in new string[] { "previous.exe", "awaiting-user", "ready" }) File.Delete(Path.Combine(stage, name));
+                Directory.Delete(stage);
+            }
+            using (MainForm form = new MainForm(false))
+            {
+                bool ready = false;
+                Program.AfterMainShown(form, delegate { Check(form.Visible && form.IsHandleCreated, "ready requires visible main window"); ready = true; });
+                Check(!ready, "construction does not confirm update");
+                form.Shown += delegate { Check(!ready, "Shown initialization precedes ready callback"); };
+                form.Show(); PumpUntil(delegate { return ready; }, "main startup ready callback"); form.Close();
+            }
             VerifyStartupChecks();
             string language = L.Current;
             try

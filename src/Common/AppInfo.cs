@@ -2,11 +2,12 @@ using System;
 using System.IO;
 
 [assembly: System.Reflection.AssemblyVersion(AutoMacro.AppInfo.AssemblyVersion)]
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("AutoMacro.Tests")]
 namespace AutoMacro
 {
     internal static class AppInfo
     {
-        internal const string AssemblyVersion = "1.0.0.0";
+        internal const string AssemblyVersion = "1.0.1.0";
         internal static string Version { get { return typeof(AppInfo).Assembly.GetName().Version.ToString(3); } }
         internal static string SettingsPath { get { return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "settings.json"); } }
         internal static string LibraryPath { get { return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "MacroLibrary.json"); } }

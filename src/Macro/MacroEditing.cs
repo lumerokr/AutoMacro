@@ -7,6 +7,17 @@ namespace AutoMacro
 {
     internal static class MacroEditing
     {
+        internal static string PairError(SavedMacro macro)
+        {
+            HashSet<string> held = new HashSet<string>();
+            foreach (MacroAction action in macro.Actions)
+            {
+                if (action.Down) held.Add(action.Identity); // Repeated key-downs are valid.
+                else if (action.Up && !held.Remove(action.Identity))
+                    return L.T("누르기 없이 떼기 동작이 있습니다. 입력 짝을 맞춘 후 저장하세요.");
+            }
+            return held.Count == 0 ? null : L.T("떼기 없는 누르기 동작이 있습니다. 입력 짝을 맞춘 후 저장하세요.");
+        }
         internal static SavedMacro Copy(SavedMacro source, bool newIdentity)
         {
             SavedMacro result = new SavedMacro { Id = newIdentity ? Guid.NewGuid().ToString("N") : source.Id,
@@ -24,6 +35,21 @@ namespace AutoMacro
                 candidate = original.Substring(0, Math.Min(original.Length, 80 - suffix.Length)) + suffix;
             }
             return candidate;
+        }
+        internal static List<SavedMacro> CopyBatch(MacroLibrary library, IList<SavedMacro> sources)
+        {
+            library.ValidateCapacity(sources);
+            HashSet<string> names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (SavedMacro item in library.Items) names.Add(item.Name.Trim());
+            List<SavedMacro> result = new List<SavedMacro>();
+            foreach (SavedMacro source in sources)
+            {
+                SavedMacro copy = Copy(source, true); string original = copy.Name.Trim(), candidate = original; int number = 2;
+                while (!names.Add(candidate))
+                { string suffix = " (" + number++ + ")"; candidate = original.Substring(0, Math.Min(original.Length, 80 - suffix.Length)) + suffix; }
+                copy.Name = candidate; result.Add(copy);
+            }
+            return result;
         }
         internal static bool SetDelay(SavedMacro macro, int index, long delay)
         {
@@ -165,7 +191,7 @@ namespace AutoMacro
                 });
                 Actions.Invalidate(); status.Text = L.T("동작을 삭제했습니다. 저장을 눌러 반영하세요."); UpdateSelection();
             };
-            Save.Click += delegate { if (Edited.Actions.Count > 0) { DialogResult = DialogResult.OK; Close(); } };
+            Save.Click += delegate { if (Edited.Actions.Count > 0 && MacroEditing.PairError(Edited) == null) { DialogResult = DialogResult.OK; Close(); } };
             Actions.VirtualListSize = Model.Rows.Count; UpdateSelection();
         }
         Snapshot CaptureSnapshot()
@@ -243,7 +269,9 @@ namespace AutoMacro
             if (rebuilding) return;
             Actions.Invalidate();
             bool single = Actions.SelectedIndices.Count == 1;
-            Delay.Enabled = ApplyDelay.Enabled = single; DeleteActions.Enabled = Actions.SelectedIndices.Count > 0; Save.Enabled = Edited.Actions.Count > 0;
+            string pairError = MacroEditing.PairError(Edited);
+            Delay.Enabled = ApplyDelay.Enabled = single; DeleteActions.Enabled = Actions.SelectedIndices.Count > 0; Save.Enabled = Edited.Actions.Count > 0 && pairError == null;
+            if (pairError != null) status.Text = pairError;
             if (single)
             {
                 int row = Actions.SelectedIndices[0];

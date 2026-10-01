@@ -23,23 +23,24 @@ namespace AutoMacro
         readonly ContextMenuStrip options = new ContextMenuStrip();
         readonly Label draftInfo = new Label(), message = new Label();
         readonly System.Windows.Forms.Timer refresh = new System.Windows.Forms.Timer();
-        readonly ManualResetEvent cancelled = new ManualResetEvent(false);
         readonly HashSet<Keys> controlDown = new HashSet<Keys>();
         readonly Stopwatch recordClock = new Stopwatch();
         InputMonitor monitor;
         RecordingBuffer buffer;
         SavedMacro draft;
-        Thread player;
-        bool active, recording, playing, capturing, libraryReadOnly, limitQueued;
-        int playCount, playbackGeneration;
+        InputJob player;
+        bool stopping;
+        string playbackResult;
+        bool active, recording, playing, capturing, libraryReadOnly, limitQueued, fileBusy;
+        int playCount;
         long playIteration, waitDeadline;
         int playTotal, actionTotal;
         bool playForever;
         IntPtr ownerHandle;
         internal Action<Native.Input> PlaybackSink = Playback.Send;
         internal event Action StateChanged;
-        internal string StateText { get { return recording ? L.T("●  녹화 중") : playing ? L.T("▶  재생 중") : L.T("●  대기 중"); } }
-        internal bool Busy { get { return recording || playing; } }
+        internal string StateText { get { return fileBusy ? L.T("처리 중") : recording ? L.T("●  녹화 중") : stopping ? L.T("정지 중…") : playing ? L.T("▶  재생 중") : L.T("●  대기 중"); } }
+        internal bool Busy { get { return recording || playing || fileBusy; } }
 
         internal MacroWorkspace(bool persist) : this(persist, AppInfo.LibraryPath) { }
         internal MacroWorkspace(bool persist, string path)
@@ -96,11 +97,11 @@ namespace AutoMacro
             list.DoubleClick += delegate { InspectSelected(); };
             if (persistence)
             {
-                try { library = MacroLibrary.Load(libraryPath); }
+                try { library = FileWorkDialog.Run<MacroLibrary>(null, delegate { return MacroLibrary.Load(libraryPath); }); }
                 catch (Exception) { libraryReadOnly = true; message.Text = L.T("매크로 파일을 읽지 못했습니다. 원본을 보존했습니다. MacroLibrary.json과 .bak 파일을 확인하세요."); }
             }
             RefreshList(null);
-            refresh.Interval = 150; refresh.Tick += delegate { UpdateUI(); };
+            refresh.Interval = 150; refresh.Tick += delegate { FinishPlayback(); UpdateUI(); };
             refresh.Start(); UpdateUI();
         }
         internal void LanguageChanged(string previous)
@@ -217,13 +218,22 @@ namespace AutoMacro
         bool SaveLibrary()
         {
             if (libraryReadOnly) return false;
-            if (!persistence) return true;
-            // Disk serialization must not stall an installed low-level hook on the UI thread.
+            try
+            {
+                if (!persistence) { library.ValidateCapacity(); return true; }
+                return RunFileWork(delegate { library.Save(libraryPath); return true; });
+            }
+            catch (LibraryLimitException error) { message.Text = error.Message; return false; }
+            catch (Exception) { message.Text = L.T("저장하지 못했습니다. 폴더 권한과 여유 공간을 확인하세요. 변경 사항은 적용하지 않았습니다."); return false; }
+        }
+        T RunFileWork<T>(Func<T> work)
+        {
+            if (fileBusy) throw new InvalidOperationException();
             bool suspended = active && monitor != null;
             if (suspended) { monitor.Dispose(); monitor = null; }
-            try { library.Save(libraryPath); return true; }
-            catch (Exception) { message.Text = L.T("저장하지 못했습니다. 폴더 권한과 여유 공간을 확인하세요. 변경 사항은 적용하지 않았습니다."); return false; }
-            finally { if (suspended && active && !capturing) InstallMonitor(); }
+            fileBusy = true; UpdateUI();
+            try { return FileWorkDialog.Run(FindForm(), work); }
+            finally { fileBusy = false; if (suspended && active && !capturing) InstallMonitor(); UpdateUI(); }
         }
         bool SaveDraft()
         {
@@ -264,16 +274,19 @@ namespace AutoMacro
         internal bool RestoreBackup(string path)
         {
             if (Busy || capturing || !File.Exists(path) || String.Equals(Path.GetFullPath(path), Path.GetFullPath(libraryPath), StringComparison.OrdinalIgnoreCase)) return false;
-            bool suspended = active && monitor != null; if (suspended) { monitor.Dispose(); monitor = null; }
             try
             {
-                MacroLibrary restored = MacroLibrary.Load(path);
-                if (persistence) { RecoveryFiles.Preserve(libraryPath); restored.Save(libraryPath, false); }
+                MacroLibrary restored = RunFileWork(delegate
+                {
+                    MacroLibrary value = MacroLibrary.Load(path);
+                    if (persistence) { RecoveryFiles.Preserve(libraryPath); value.Save(libraryPath, false); }
+                    return value;
+                });
                 library = restored; libraryReadOnly = false; controlDown.Clear(); RefreshList(null);
                 message.Text = L.T("매크로 백업을 복원했습니다."); return true;
             }
             catch (Exception) { message.Text = L.T("백업을 복원하지 못했습니다. 기존 파일과 목록은 유지됩니다."); return false; }
-            finally { if (suspended && active) InstallMonitor(); UpdateUI(); }
+            finally { UpdateUI(); }
         }
         internal void RestoreBackupDialog()
         {
@@ -287,7 +300,7 @@ namespace AutoMacro
         }
         bool ReplaceMacro(SavedMacro selected, SavedMacro edited)
         {
-            if (Busy || libraryReadOnly || edited.Actions.Count == 0) return false;
+            if (Busy || libraryReadOnly || edited.Actions.Count == 0 || MacroEditing.PairError(edited) != null) return false;
             int index = library.Items.IndexOf(selected); if (index < 0) return false;
             library.Items[index] = edited;
             if (!SaveLibrary()) { library.Items[index] = selected; return false; }
@@ -305,19 +318,19 @@ namespace AutoMacro
         bool AddCopies(IList<SavedMacro> sources)
         {
             if (Busy || libraryReadOnly || sources.Count == 0) return false;
-            List<SavedMacro> added = new List<SavedMacro>();
-            foreach (SavedMacro source in sources)
-            {
-                SavedMacro copy = MacroEditing.Copy(source, true);
-                copy.Name = MacroEditing.UniqueName(library, copy.Name); library.Items.Add(copy); added.Add(copy);
-            }
+            List<SavedMacro> added;
+            try { added = RunFileWork(delegate { return MacroEditing.CopyBatch(library, sources); }); }
+            catch (LibraryLimitException error) { message.Text = error.Message; return false; }
+            catch (Exception) { message.Text = L.T("매크로 JSON 파일을 읽지 못했습니다. 기존 목록은 유지됩니다."); return false; }
+            library.Items.AddRange(added);
             if (!SaveLibrary()) { foreach (SavedMacro copy in added) library.Items.Remove(copy); return false; }
             RefreshList(added[0].Id); return true;
         }
         void DuplicateSelected()
         {
             SavedMacro selected = Selected; if (selected == null || Busy || libraryReadOnly) return;
-            SavedMacro copy = MacroEditing.Copy(selected, true);
+            SavedMacro copy = new SavedMacro { Name = selected.Name, Actions = selected.Actions, Duration = selected.Duration,
+                RepeatCount = selected.RepeatCount, RepeatForever = selected.RepeatForever, RepeatDelayMs = selected.RepeatDelayMs };
             copy.Name = selected.Name.Substring(0, Math.Min(selected.Name.Length, 73)) + L.T(" 복사본");
             if (copy.Name.Length > 80) copy.Name = copy.Name.Substring(0, 80);
             if (AddCopies(new SavedMacro[] { copy })) message.Text = L.T("매크로를 복제했습니다.");
@@ -325,17 +338,16 @@ namespace AutoMacro
         internal bool ImportFile(string path)
         {
             if (Busy || libraryReadOnly || !File.Exists(path)) return false;
-            bool suspended = active && monitor != null;
-            if (suspended) { monitor.Dispose(); monitor = null; }
             try
             {
-                MacroLibrary incoming = MacroLibrary.Load(path);
+                MacroLibrary incoming = RunFileWork(delegate { return MacroLibrary.Load(path); });
                 if (incoming.Items.Count == 0) { message.Text = L.T("파일에 저장된 매크로가 없습니다."); return false; }
                 if (!AddCopies(incoming.Items)) return false;
                 message.Text = String.Format(L.T("{0}개 매크로를 가져왔습니다."), incoming.Items.Count); return true;
             }
+            catch (LibraryLimitException error) { message.Text = error.Message; return false; }
             catch (Exception) { message.Text = L.T("매크로 JSON 파일을 읽지 못했습니다. 기존 목록은 유지됩니다."); return false; }
-            finally { if (suspended && active && !capturing) InstallMonitor(); UpdateUI(); }
+            finally { UpdateUI(); }
         }
         void ImportSelectedFile()
         {
@@ -346,8 +358,6 @@ namespace AutoMacro
         internal bool ExportFile(SavedMacro selected, string path)
         {
             if (selected == null || Busy) return false;
-            bool suspended = active && monitor != null;
-            if (suspended) { monitor.Dispose(); monitor = null; }
             try
             {
                 string destination = Path.GetFullPath(path);
@@ -356,11 +366,11 @@ namespace AutoMacro
                     if (String.Equals(destination, Path.GetFullPath(protectedPath), StringComparison.OrdinalIgnoreCase) ||
                         String.Equals(destination, Path.GetFullPath(protectedPath) + ".bak", StringComparison.OrdinalIgnoreCase))
                     { message.Text = L.T("사용자 데이터 파일에는 내보낼 수 없습니다."); return false; }
-                MacroLibrary exported = new MacroLibrary(); exported.Items.Add(MacroEditing.Copy(selected, false)); exported.Save(path);
+                RunFileWork(delegate { MacroLibrary exported = new MacroLibrary(); exported.Items.Add(MacroEditing.Copy(selected, false)); exported.Save(path); return true; });
                 message.Text = L.T("매크로를 내보냈습니다."); return true;
             }
             catch (Exception) { message.Text = L.T("내보내지 못했습니다. 폴더 권한과 여유 공간을 확인하세요."); return false; }
-            finally { if (suspended && active && !capturing) InstallMonitor(); UpdateUI(); }
+            finally { UpdateUI(); }
         }
         void ExportSelected()
         {
@@ -439,28 +449,28 @@ namespace AutoMacro
         void PlaySelected()
         {
             SavedMacro selected = Selected; if (!active || monitor == null || selected == null || Busy || capturing) return;
-            cancelled.Reset(); playing = true; playCount = 0; playIteration = 1; waitDeadline = 0; playTotal = selected.RepeatCount; actionTotal = selected.Actions.Count; playForever = selected.RepeatForever; int generation = ++playbackGeneration;
+            playing = true; playbackResult = null; playCount = 0; playIteration = 1; waitDeadline = 0; playTotal = selected.RepeatCount; actionTotal = selected.Actions.Count; playForever = selected.RepeatForever;
             message.Text = (selected.RepeatForever ? L.T("계속 반복합니다.") : selected.RepeatCount.ToString("N0") + L.T("회 재생합니다.")) + L.T(" 반복 사이 ") + selected.RepeatDelayMs.ToString("N0") + L.T("ms 대기 · ") + MainForm.KeyName(library.StopKey) + L.T("로 정지"); UpdateUI();
-            player = new Thread(delegate()
+            player = new InputJob(delegate(WaitHandle cancelled)
             {
                 string result;
                 try { result = Playback.RunRepeated(selected, cancelled, PlaybackSink, delegate(long iteration, int n) { Interlocked.Exchange(ref playIteration, iteration); Interlocked.Exchange(ref playCount, n); Interlocked.Exchange(ref waitDeadline, 0); }, true, delegate(int pause) { Interlocked.Exchange(ref waitDeadline, Stopwatch.GetTimestamp() + (long)pause * Stopwatch.Frequency / 1000); }) ? L.T("재생을 완료했습니다.") : L.T("재생을 정지했습니다."); }
                 catch (Exception error) { result = L.T("재생 중단: ") + error.Message; }
-                if (!IsDisposed && IsHandleCreated)
-                {
-                    try { BeginInvoke((Action)delegate { if (generation != playbackGeneration || IsDisposed) return; playing = false; player = null; message.Text = result; UpdateUI(); }); }
-                    catch (InvalidOperationException) { }
-                }
+                playbackResult = result;
             });
-            player.IsBackground = true; player.Start();
         }
         void StopPlayback()
         {
-            ++playbackGeneration; cancelled.Set();
-            if (player != null) { player.Join(); player = null; }
-            if (playing) message.Text = L.T("재생을 정지했습니다.");
-            playing = false; UpdateUI();
+            if (player != null) { stopping = true; player.Stop(); message.Text = L.T("정지 중…"); }
+            FinishPlayback(); UpdateUI();
         }
+        void FinishPlayback()
+        {
+            if (player == null || !player.Completed) return;
+            player.Dispose(); player = null; playing = false; stopping = false;
+            message.Text = playbackResult ?? L.T("재생을 정지했습니다."); UpdateUI();
+        }
+        internal void RequestStop() { EmergencyStop(); }
         void EmergencyStop() { EndRecording(); StopPlayback(); }
         void CaptureShortcut(int target)
         {
@@ -497,7 +507,7 @@ namespace AutoMacro
             {
                 active = false; recording = false; StopPlayback();
                 if (monitor != null) { monitor.Dispose(); monitor = null; }
-                refresh.Stop(); refresh.Dispose(); cancelled.Dispose();
+                refresh.Stop(); refresh.Dispose(); if (player != null) player.Dispose();
                 options.Dispose();
             }
             base.Dispose(disposing);

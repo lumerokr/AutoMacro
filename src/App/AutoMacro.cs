@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -283,7 +283,6 @@ namespace AutoMacro
         readonly HelpBubble holdTip = new HelpBubble(L.T("해당 창의 해당 위치에서만 클리커가 작동하도록 하는 기능입니다. 창을 최소화 할 경우 작동되지 않습니다.\n\n클릭이 발생하지 않는 경우 해당 창에서는 사용할 수 없는 기능이므로 비활성화 후 사용해주세요\n\n입력 종류에 따라 작동 여부가 달라질수 있습니다.\nex) 왼쪽 클릭 작동 O, 키보드 입력 작동 X"));
         internal Func<ClickTarget> CaptureClickTarget = ClickTarget.Capture;
         internal Func<Native.Input[], uint> SystemInput = delegate(Native.Input[] items) { return Native.SendInput((uint)items.Length, items, Marshal.SizeOf(typeof(Native.Input))); };
-        int runGeneration;
         readonly ComboBox mode = new ComboBox();
         readonly TextBox keyDisplay = new TextBox();
         readonly Button pick = new ModernButton();
@@ -299,8 +298,10 @@ namespace AutoMacro
         Keys toggleKey = Keys.F6, stopKey = Keys.F8, macroKey = Keys.Space;
         bool capturing;
         readonly System.Windows.Forms.Timer refresh = new System.Windows.Forms.Timer();
-        readonly ManualResetEvent cancel = new ManualResetEvent(false);
-        Thread worker;
+        bool stopping, closePending;
+        bool? pendingPage;
+        string stopMessage;
+        InputJob worker;
         bool running, hotkeysReady;
         long count;
         ThumbHook controlMouseHook;
@@ -438,8 +439,12 @@ namespace AutoMacro
             interval.ValueChanged += delegate { SavePreferences(); };
             refresh.Interval = 100; refresh.Tick += delegate
             {
+                FinishClickerStop();
+                if (closePending && !running && !macroWorkspace.Busy) { closePending = false; Close(); return; }
+                if (pendingPage.HasValue && !running && !macroWorkspace.Busy)
+                { bool page = pendingPage.Value; pendingPage = null; SelectPage(page); }
                 counter.Text = L.T("완료한 입력  ") + Interlocked.Read(ref count).ToString("N0") + L.T("회");
-                if (running) status.Text = L.T("실행 중 · ") + KeyName(toggleKey) + L.T(" 또는 ") + KeyName(stopKey) + L.T("로 정지");
+                if (running && !stopping) status.Text = L.T("실행 중 · ") + KeyName(toggleKey) + L.T(" 또는 ") + KeyName(stopKey) + L.T("로 정지");
             };
             refresh.Start(); UpdateControls();
         }
@@ -560,7 +565,7 @@ namespace AutoMacro
         }
         protected override void Dispose(bool disposing)
         {
-            if (disposing) holdTip.Dispose();
+            if (disposing) { holdTip.Dispose(); if (worker != null) worker.Dispose(); }
             base.Dispose(disposing);
         }
         void SetupDisplay(TextBox box, int x, int y, int width)
@@ -585,6 +590,12 @@ namespace AutoMacro
         void SelectPage(bool showMacro)
         {
             if (macroPage == showMacro || capturing) return;
+            if (running || macroWorkspace.Busy)
+            {
+                pendingPage = showMacro;
+                StopMacro(L.T("정지됨")); macroWorkspace.RequestStop();
+                return;
+            }
             holdTip.Dismiss();
             if (macroPage) macroWorkspace.Deactivate();
             StopMacro(L.T("정지됨"));
@@ -687,9 +698,9 @@ namespace AutoMacro
         }
         protected override void OnShown(EventArgs e)
         {
-            base.OnShown(e);
             hotkeysReady = !macroPage && RegisterKeys(toggleKey, stopKey); UpdateControls();
             if (!hotkeysReady) status.Text = L.T("단축키 등록 실패: 다른 키로 설정하세요.");
+            base.OnShown(e);
         }
         void UnregisterKeys()
         {
@@ -742,7 +753,7 @@ namespace AutoMacro
             testCompatibility.Enabled = holdWindow.Enabled = !running && !capturing;
             mode.Enabled = !running; interval.Enabled = !running;
             pickToggle.Enabled = pickStop.Enabled = !running;
-            badge.Text = macroPage ? macroWorkspace.StateText : running ? L.T("●  실행 중") : L.T("●  대기 중");
+            badge.Text = macroPage ? macroWorkspace.StateText : stopping ? L.T("정지 중…") : running ? L.T("●  실행 중") : L.T("●  대기 중");
             badge.ForeColor = running ? Theme.Accent : Theme.Muted;
             keyDisplay.Text = KeyName(macroKey); toggleDisplay.Text = KeyName(toggleKey); stopDisplay.Text = KeyName(stopKey);
             start.Text = L.T("시작  ") + KeyName(toggleKey); stop.Text = L.T("정지  ") + KeyName(stopKey);
@@ -751,7 +762,7 @@ namespace AutoMacro
         }
         void StartMacro()
         {
-            if (running || !hotkeysReady || !Enabled || capturing || macroPage) return;
+            if (running || closePending || macroWorkspace.Busy || !hotkeysReady || !Enabled || capturing || macroPage) return;
             string conflict = ValidateKeys(toggleKey, stopKey, macroKey);
             if (conflict != null) { status.Text = conflict; return; }
             // Commit and clamp manually typed text before capturing the interval.
@@ -768,11 +779,10 @@ namespace AutoMacro
                 pinnedWindow.Text = L.T("고정된 창: ") + target.Name + L.T("\n위치: ") + target.Position.X + ", " + target.Position.Y;
             }
             Native.Input[] inputs = Native.MakeInputs(selectedMode, selectedKey);
-            cancel.Reset(); Interlocked.Exchange(ref count, 0); running = true;
-            int generation = ++runGeneration;
+            Interlocked.Exchange(ref count, 0); running = true; stopping = false;
             UpdateControls();
             status.Text = L.T("실행 중 · ") + KeyName(toggleKey) + L.T(" 또는 ") + KeyName(stopKey) + L.T("로 정지");
-            worker = new Thread(delegate()
+            worker = new InputJob(delegate(WaitHandle cancel)
             {
                 while (!cancel.WaitOne(0))
                 {
@@ -782,7 +792,7 @@ namespace AutoMacro
                         catch (Exception error)
                         {
                             string message = L.T("고정 입력 중지: ") + error.Message;
-                            if (!cancel.WaitOne(0)) BeginInvoke((Action)delegate { if (generation == runGeneration) StopMacro(message); });
+                            if (!cancel.WaitOne(0)) Interlocked.Exchange(ref stopMessage, message);
                             return;
                         }
                     }
@@ -793,7 +803,7 @@ namespace AutoMacro
                         {
                             // Release a possible partially injected press before stopping.
                             SystemInput(new Native.Input[] { inputs[1] });
-                            if (!cancel.WaitOne(0)) BeginInvoke((Action)delegate { if (generation == runGeneration) StopMacro(L.T("입력 실패: 대상 앱의 권한 또는 입력 허용 여부를 확인하세요.")); });
+                            if (!cancel.WaitOne(0)) Interlocked.Exchange(ref stopMessage, L.T("입력 실패: 대상 앱의 권한 또는 입력 허용 여부를 확인하세요."));
                             return;
                         }
                     }
@@ -801,14 +811,24 @@ namespace AutoMacro
                     if (cancel.WaitOne(delay)) return;
                 }
             });
-            worker.IsBackground = true; worker.Start();
         }
         void StopMacro(string message)
         {
-            runGeneration++;
-            cancel.Set(); if (worker != null) { worker.Join(); worker = null; }
+            if (worker != null)
+            {
+                if (!stopping) { stopping = true; stopMessage = message; }
+                worker.Stop(); status.Text = L.T("정지 중…"); UpdateControls();
+                FinishClickerStop(); return;
+            }
             running = false; UpdateControls(); status.Text = message;
             counter.Text = L.T("완료한 입력: ") + Interlocked.Read(ref count).ToString("N0") + L.T("회");
+        }
+        void FinishClickerStop()
+        {
+            if (worker == null || !worker.Completed) return;
+            if (worker.Error != null) stopMessage = L.T("입력 실패: 대상 앱의 권한 또는 입력 허용 여부를 확인하세요.");
+            worker.Dispose(); worker = null; running = false; stopping = false;
+            UpdateControls(); status.Text = stopMessage ?? L.T("정지됨"); stopMessage = null;
         }
         protected override void WndProc(ref Message m)
         {
@@ -824,6 +844,8 @@ namespace AutoMacro
         }
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
+            StopMacro(L.T("종료됨")); macroWorkspace.RequestStop();
+            if (running || macroWorkspace.Busy) { closePending = true; e.Cancel = true; return; }
             if (!macroWorkspace.PrepareClose()) { e.Cancel = true; return; }
             base.OnFormClosing(e);
         }
@@ -836,12 +858,34 @@ namespace AutoMacro
             SavePreferences();
             StopMacro(L.T("종료됨")); refresh.Stop(); refresh.Dispose();
             UnregisterKeys();
-            cancel.Dispose(); base.OnFormClosed(e);
+            base.OnFormClosed(e);
         }
     }
 
     internal static class Program
     {
+        internal static void AfterMainShown(Form form, Action ready)
+        {
+            form.Shown += delegate
+            {
+                form.BeginInvoke((Action)delegate
+                {
+                    if (form.IsDisposed || form.Disposing || !form.Visible) return;
+                    try { ready(); } catch { form.Close(); }
+                });
+            };
+        }
+        static bool PrepareStartup(string updateFolder)
+        {
+            if (updateFolder != null) UpdateInstaller.SetAwaitingUser(updateFolder, true);
+            try
+            {
+                if (!SettingsRecoveryDialog.AllowStartup(AppInfo.SettingsPath)) return false;
+                L.Initialize(AppInfo.SettingsPath);
+                return StartupNotice.AllowStartup(AppInfo.SettingsPath);
+            }
+            finally { if (updateFolder != null) UpdateInstaller.SetAwaitingUser(updateFolder, false); }
+        }
         static void RunMain(MainForm form)
         {
             // Attach only after the usage notice has been accepted.
@@ -852,79 +896,25 @@ namespace AutoMacro
         {
             Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
             if (args.Length > 0 && args[0] == "--apply-update") return UpdateInstaller.Run(args);
-            if (args.Length > 0 && args[0] == "--ui-test")
-            {
-                try { MacroTests.RunUI(); return 0; }
-                catch (Exception error) { Console.Error.WriteLine(error); return 20; }
-            }
-            if (args.Length > 0 && args[0] == "--self-test")
-            {
-                try
-                {
-                    if (Marshal.SizeOf(typeof(Native.Input)) != (IntPtr.Size == 8 ? 40 : 28)) return 1;
-                    if (ThumbHook.Decode(0x00010000) != Keys.XButton1 || ThumbHook.Decode(0x00020000) != Keys.XButton2 || ThumbHook.Decode(0) != Keys.None) return 10;
-                    if (MainForm.ClampInterval(0) != 10 || MainForm.ClampInterval(-1) != 10 || MainForm.ClampInterval(100) != 100) return 2;
-                    for (int mode = 0; mode < 3; mode++)
-                    {
-                        Native.Input[] pair = Native.MakeInputs(mode, Keys.Space);
-                        uint flag = mode == 0 ? 2u : mode == 1 ? 8u : 32u;
-                        if (pair[0].data.mouse.flags != flag || pair[1].data.mouse.flags != flag * 2) return 3;
-                    }
-                    Native.Input[] keys = Native.MakeInputs(3, Keys.Left);
-                    if (keys[0].type != 1 || keys[0].data.keyboard.flags != 1 || keys[1].data.keyboard.flags != 3) return 4;
-                    keys = Native.MakeInputs(3, Keys.A);
-                    if (keys[0].data.keyboard.key != 65 || keys[1].data.keyboard.flags != 2) return 5;
-                    if (MainForm.ValidateKeys(Keys.F6, Keys.F6, Keys.Space) == null ||
-                        MainForm.ValidateKeys(Keys.F6, Keys.F8, Keys.F6) == null ||
-                        MainForm.ValidateKeys(Keys.F6, Keys.F8, Keys.F8) == null ||
-                        MainForm.ValidateKeys(Keys.F9, Keys.F10, Keys.F6) != null ||
-                        MainForm.ValidateKeys(Keys.ControlKey, Keys.F8, Keys.RControlKey) == null) return 6;
-                    using (MainForm form = new MainForm(false)) { form.CreateControl(); if (!form.VerifyConflictGuards()) return 7; }
-                    using (KeyPicker picker = new KeyPicker(L.T("검사"), delegate(Keys key) { return key == Keys.F6 ? L.T("중복 키") : null; }))
-                    { if (!picker.VerifyCaptureRelease()) return 8; }
-                    string testPath = Path.Combine(Path.GetTempPath(), "AutoMacro-test-" + Guid.NewGuid().ToString("N") + ".json");
-                    try
-                    {
-                        Preferences p = new Preferences { Mode = 3, Interval = 25, Macro = Keys.A, Toggle = Keys.XButton1, Stop = Keys.XButton2 };
-                        p.Save(testPath); p.Interval = 30; p.Save(testPath);
-                        Preferences restored = Preferences.Load(testPath);
-                        if (restored.Mode != 3 || restored.Interval != 30 || restored.Macro != Keys.A || restored.Toggle != Keys.XButton1 || restored.Stop != Keys.XButton2) return 11;
-                        File.WriteAllText(testPath, "broken JSON");
-                        bool rejected = false; try { Preferences.Load(testPath); } catch { rejected = true; }
-                        if (!rejected) return 12;
-                    }
-                    finally { if (File.Exists(testPath)) File.Delete(testPath); }
-                    MacroTests.Run();
-                    return 0;
-                }
-                catch (Exception error) { Console.Error.WriteLine(error); return 9; }
-            }
-            if (args.Length > 0 && args[0] == "--fresh-start-test")
-            {
-                try { MacroTests.RunFreshStartup(); return 0; }
-                catch (Exception error) { Console.Error.WriteLine(error); return 1; }
-            }
             bool created;
             L.Initialize(AppInfo.SettingsPath);
             using (Mutex mutex = new Mutex(true, "Local\\SimpleAutoMacroApp", out created))
             {
                 if (!created) { MessageBox.Show(L.T("Auto Macro가 이미 실행 중입니다."), "Auto Macro"); return 0; }
-                if (!SettingsRecoveryDialog.AllowStartup(AppInfo.SettingsPath)) return 0;
-                L.Initialize(AppInfo.SettingsPath);
                 if (args.Length == 2 && args[0] == "--update-ready")
                 {
-                    // Confirm startup only after settings, macro data, and the main UI load.
+                    try { if (!PrepareStartup(args[1])) return 0; } catch { return 1; }
+                    // Confirm only after OnShown initialization and the first UI message turn.
                     using (MainForm updated = new MainForm())
                     {
-                        try { UpdateInstaller.SignalReady(args[1]); } catch { return 1; }
-                        if (!StartupNotice.AllowStartup(AppInfo.SettingsPath)) return 0;
+                        AfterMainShown(updated, delegate { UpdateInstaller.SignalReady(args[1]); });
                         RunMain(updated);
                     }
                 }
                 else
                 {
                     UpdateInstaller.CleanCompleted();
-                    if (!StartupNotice.AllowStartup(AppInfo.SettingsPath)) return 0;
+                    if (!PrepareStartup(null)) return 0;
                     RunMain(new MainForm());
                 }
             }
