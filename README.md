@@ -1,2 +1,2 @@
 This program was made entirely using AI.
-이 프로그램은 100% AI를 사용했습니다.
+\n이 프로그램은 100% AI를 사용했습니다.
