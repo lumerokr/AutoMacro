@@ -1,0 +1,11 @@
+# Local user data and recovery files
+settings.json
+MacroLibrary.json
+*.bak
+*.tmp
+.automacro-update-*/
+
+# Build and release outputs
+*.exe
+*.zip
+*.log
