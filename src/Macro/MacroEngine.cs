@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -60,32 +60,28 @@ namespace AutoMacro
         internal const int MaxMacros = 1000, MaxActionsPerMacro = 200512, MaxTotalActions = 500000;
         internal Keys RecordKey = Keys.F7, PlayKey = Keys.F9, StopKey = Keys.F8;
         internal List<SavedMacro> Items = new List<SavedMacro>();
-        internal static bool ValidShortcut(Keys key)
-        {
-            Keys normalized = MainForm.NormalizeKey(key);
-            return MainForm.IsThumb(key) || ((int)key >= 8 && (int)key <= 254 && normalized != Keys.ControlKey && normalized != Keys.ShiftKey && normalized != Keys.Menu && key != Keys.LWin && key != Keys.RWin);
-        }
+        internal static bool ValidShortcut(Keys key) { return InputRules.ValidShortcut(key); }
         internal string ValidateShortcut(int target, Keys key)
         {
             if (!ValidShortcut(key)) return L.T("키보드 키 또는 마우스 4·5번 버튼 하나를 지정하세요.");
             Keys[] keys = { RecordKey, PlayKey, StopKey };
-            for (int i = 0; i < keys.Length; i++) if (i != target && MainForm.NormalizeKey(keys[i]) == MainForm.NormalizeKey(key)) return L.T("녹화·실행·긴급 정지 단축키는 서로 달라야 합니다.");
-            foreach (SavedMacro item in Items) if (item.RunKey != Keys.None && MainForm.NormalizeKey(item.RunKey) == MainForm.NormalizeKey(key)) return L.T("다른 매크로의 실행 단축키와 중복됩니다.");
+            for (int i = 0; i < keys.Length; i++) if (i != target && InputRules.NormalizeKey(keys[i]) == InputRules.NormalizeKey(key)) return L.T("녹화·실행·긴급 정지 단축키는 서로 달라야 합니다.");
+            foreach (SavedMacro item in Items) if (item.RunKey != Keys.None && InputRules.NormalizeKey(item.RunKey) == InputRules.NormalizeKey(key)) return L.T("다른 매크로의 실행 단축키와 중복됩니다.");
             return null;
         }
         internal string ValidateRunKey(SavedMacro selected, Keys key, IEnumerable<Keys> reserved, IList<MacroAction> actions = null)
         {
             if (key == Keys.None) return null;
             if (!ValidShortcut(key)) return L.T("키보드 키 또는 마우스 4·5번 버튼 하나를 지정하세요.");
-            Keys normalized = MainForm.NormalizeKey(key);
+            Keys normalized = InputRules.NormalizeKey(key);
             foreach (Keys control in new Keys[] { RecordKey, PlayKey, StopKey })
-                if (MainForm.NormalizeKey(control) == normalized) return L.T("시작·녹화·긴급 정지 단축키와 중복됩니다.");
+                if (InputRules.NormalizeKey(control) == normalized) return L.T("시작·녹화·긴급 정지 단축키와 중복됩니다.");
             if (reserved != null) foreach (Keys control in reserved)
-                if (MainForm.NormalizeKey(control) == normalized) return L.T("Clicker 입력 키 또는 단축키와 중복됩니다.");
+                if (InputRules.NormalizeKey(control) == normalized) return L.T("Clicker 입력 키 또는 단축키와 중복됩니다.");
             foreach (SavedMacro item in Items)
-                if (item != selected && item.RunKey != Keys.None && MainForm.NormalizeKey(item.RunKey) == normalized) return L.T("다른 매크로의 실행 단축키와 중복됩니다.");
+                if (item != selected && item.RunKey != Keys.None && InputRules.NormalizeKey(item.RunKey) == normalized) return L.T("다른 매크로의 실행 단축키와 중복됩니다.");
             foreach (MacroAction action in actions ?? selected.Actions)
-                if ((action.Kind == ActionKind.KeyDown || action.Kind == ActionKind.KeyUp) && MainForm.NormalizeKey((Keys)action.Code) == normalized) return L.T("이 매크로에 기록된 입력 키와 중복됩니다.");
+                if ((action.Kind == ActionKind.KeyDown || action.Kind == ActionKind.KeyUp) && InputRules.NormalizeKey((Keys)action.Code) == normalized) return L.T("이 매크로에 기록된 입력 키와 중복됩니다.");
             return null;
         }
         internal string CheckName(string name, SavedMacro except)
@@ -109,13 +105,40 @@ namespace AutoMacro
             { if (++count > MaxMacros || item.Actions.Count > MaxActionsPerMacro || item.Actions.Count > MaxTotalActions - actions) throw new LibraryLimitException(); actions += item.Actions.Count; }
             if (count > MaxMacros) throw new LibraryLimitException();
         }
-        internal void Save(string path, bool backup = true)
+        internal void Validate()
         {
             ValidateCapacity();
+            if (ValidateShortcut(0, RecordKey) != null || ValidateShortcut(1, PlayKey) != null || ValidateShortcut(2, StopKey) != null)
+                throw new FormatException("Invalid shortcuts");
+            HashSet<Guid> ids = new HashSet<Guid>();
+            HashSet<string> names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (SavedMacro item in Items)
+            {
+                Guid id;
+                if (!Guid.TryParse(item.Id, out id) || !ids.Add(id) || ValidateName(item.Name) != null || !names.Add(item.Name.Trim()) || item.Duration < 0 || item.Duration > 86400000)
+                    throw new FormatException("Invalid macro");
+                if (item.RepeatCount < 1 || item.RepeatCount > 1000000 || item.RepeatDelayMs < 0 || item.RepeatDelayMs > 86400000)
+                    throw new FormatException("Invalid repeat settings");
+                if (item.SpeedPercent < 10 || item.SpeedPercent > 1000 || (item.WindowRelative && !item.OriginKnown) || ValidateRunKey(item, item.RunKey, null) != null)
+                    throw new FormatException("Invalid playback settings");
+                if (item.Actions.Count == 0) throw new FormatException("Empty macro");
+                long previous = 0;
+                foreach (MacroAction action in item.Actions)
+                {
+                    if (action.At < previous || action.At > item.Duration || !Enum.IsDefined(typeof(ActionKind), action.Kind) || action.Scan < 0 || action.Scan > 65535 ||
+                        ((action.Kind == ActionKind.KeyDown || action.Kind == ActionKind.KeyUp) && (action.Code < 8 || action.Code > 254)) ||
+                        ((action.Kind == ActionKind.MouseDown || action.Kind == ActionKind.MouseUp) && (action.Code < 1 || action.Code > 5)))
+                        throw new FormatException("Invalid action");
+                    previous = action.At;
+                }
+            }
+        }
+        internal void Save(string path, bool backup = true)
+        {
+            Validate();
             DataNode root = new DataNode("MacroLibrary", new DataField("version", 1), new DataField("record", (int)RecordKey), new DataField("play", (int)PlayKey), new DataField("stop", (int)StopKey));
             foreach (SavedMacro item in Items)
             {
-                if (item.SpeedPercent < 10 || item.SpeedPercent > 1000 || ValidateRunKey(item, item.RunKey, null) != null || (item.WindowRelative && !item.OriginKnown)) throw new FormatException("Invalid playback settings");
                 DataNode node = new DataNode("Macro", new DataField("id", item.Id), new DataField("name", item.Name), new DataField("created", item.Created.ToString("o")), new DataField("duration", item.Duration),
                     new DataField("repeatCount", item.RepeatCount), new DataField("repeatForever", item.RepeatForever), new DataField("repeatDelayMs", item.RepeatDelayMs), new DataField("runKey", (int)item.RunKey), new DataField("speedPercent", item.SpeedPercent),
                     new DataField("modified", item.Modified.ToString("o")), new DataField("windowRelative", item.WindowRelative), new DataField("originKnown", item.OriginKnown), new DataField("originX", item.RecordedOriginX), new DataField("originY", item.RecordedOriginY));
@@ -136,8 +159,6 @@ namespace AutoMacro
             DataNode root = DataStore.Load(path);
             if (root.Name != "MacroLibrary" || (int)root.Attribute("version") != 1) throw new FormatException("Unsupported library");
             library.RecordKey = (Keys)(int)root.Attribute("record"); library.PlayKey = (Keys)(int)root.Attribute("play"); library.StopKey = (Keys)(int)root.Attribute("stop");
-            if (library.ValidateShortcut(0, library.RecordKey) != null || library.ValidateShortcut(1, library.PlayKey) != null || library.ValidateShortcut(2, library.StopKey) != null) throw new FormatException("Invalid shortcuts");
-            HashSet<Guid> ids = new HashSet<Guid>(); HashSet<string> names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (DataNode node in root.Elements("Macro"))
             {
                 SavedMacro item = new SavedMacro { Id = (string)node.Attribute("id"), Name = (string)node.Attribute("name"), Created = DateTime.Parse((string)node.Attribute("created"), null, System.Globalization.DateTimeStyles.RoundtripKind), Duration = (long)node.Attribute("duration") };
@@ -149,28 +170,18 @@ namespace AutoMacro
                 item.Modified = node.Attribute("modified") == null ? item.Created : DateTime.Parse((string)node.Attribute("modified"), null, System.Globalization.DateTimeStyles.RoundtripKind);
                 item.WindowRelative = (bool?)node.Attribute("windowRelative") ?? false; item.OriginKnown = (bool?)node.Attribute("originKnown") ?? false;
                 item.RecordedOriginX = (int?)node.Attribute("originX") ?? 0; item.RecordedOriginY = (int?)node.Attribute("originY") ?? 0;
-                if (item.WindowRelative && !item.OriginKnown) throw new FormatException("Missing coordinate origin");
-                if (item.SpeedPercent < 10 || item.SpeedPercent > 1000) throw new FormatException("Invalid speed");
-                if (item.RepeatCount < 1 || item.RepeatCount > 1000000 || item.RepeatDelayMs < 0 || item.RepeatDelayMs > 86400000) throw new FormatException("Invalid repeat settings");
-                Guid id;
-                if (!Guid.TryParse(item.Id, out id) || !ids.Add(id) || ValidateName(item.Name) != null || !names.Add(item.Name.Trim()) || item.Duration < 0 || item.Duration > 86400000) throw new FormatException("Invalid macro");
-                long previous = 0;
                 foreach (DataNode element in node.Elements("Action"))
                 {
                     MacroAction action = new MacroAction { At = (long)element.Attribute("at"), Kind = (ActionKind)(int)element.Attribute("kind"), X = (int)element.Attribute("x"), Y = (int)element.Attribute("y"), Code = (int)element.Attribute("code"), Scan = (int)element.Attribute("scan"), Extended = (bool)element.Attribute("extended") };
                     if ((element.Attribute("clientX") == null) != (element.Attribute("clientY") == null)) throw new FormatException("Incomplete client coordinate");
                     action.HasClientPosition = element.Attribute("clientX") != null;
                     if (action.HasClientPosition) { action.ClientX = (int)element.Attribute("clientX"); action.ClientY = (int)element.Attribute("clientY"); }
-                    if (action.At < previous || action.At > item.Duration || !Enum.IsDefined(typeof(ActionKind), action.Kind) || action.Scan < 0 || action.Scan > 65535 ||
-                        ((action.Kind == ActionKind.KeyDown || action.Kind == ActionKind.KeyUp) && (action.Code < 8 || action.Code > 254)) ||
-                        ((action.Kind == ActionKind.MouseDown || action.Kind == ActionKind.MouseUp) && (action.Code < 1 || action.Code > 5))) throw new FormatException("Invalid action");
-                    item.Actions.Add(action); previous = action.At;
+                    item.Actions.Add(action);
                     if (item.Actions.Count > MaxActionsPerMacro) throw new LibraryLimitException();
                 }
-                if (item.Actions.Count == 0) throw new FormatException("Empty macro");
                 library.Items.Add(item);
             }
-            foreach (SavedMacro item in library.Items) if (library.ValidateRunKey(item, item.RunKey, null) != null) throw new FormatException("Invalid macro shortcut");
+            library.Validate();
             
             return library;
         }
@@ -290,6 +301,15 @@ namespace AutoMacro
         { return Math.Max(macro.RepeatDelayMs, (int)Math.Max(0, 10 - ScaledTime(macro.Duration, macro.SpeedPercent))); }
         internal static double TotalMilliseconds(SavedMacro macro)
         { return macro.RepeatForever ? Double.PositiveInfinity : ScaledTime(macro.Duration, macro.SpeedPercent) * (double)macro.RepeatCount + RepeatPause(macro) * (double)(macro.RepeatCount - 1); }
+        internal static double ProgressFraction(SavedMacro macro, double elapsedMs, bool completed)
+        {
+            if (completed && !macro.RepeatForever) return 1;
+            double duration = macro.RepeatForever ? ScaledTime(macro.Duration, macro.SpeedPercent) + RepeatPause(macro) : TotalMilliseconds(macro);
+            if (duration <= 0) return 0;
+            // Elapsed time includes the recording's trailing wait and the pauses between repeats.
+            // Only the worker's successful completion may fill the bar completely.
+            return Math.Max(0, Math.Min(0.999, elapsedMs / duration));
+        }
         internal static bool RunRepeated(SavedMacro macro, WaitHandle cancel, Action<Native.Input> send, Action<long, int> progress, bool timed, Action<int> waiting = null, Func<MacroAction, MacroAction> resolve = null, Action validateTarget = null)
         {
             for (long iteration = 1; macro.RepeatForever || iteration <= macro.RepeatCount; iteration++)
@@ -318,6 +338,7 @@ namespace AutoMacro
             }
             else
             {
+                if (!screen.Contains(action.X, action.Y)) throw new InvalidOperationException(L.T("입력 위치가 화면 밖이어서 재생을 중단했습니다."));
                 // Absolute movement in the entire virtual desktop, including negative monitor coordinates.
                 input.data.mouse.dx = (int)Math.Max(0, Math.Min(65535, ((long)action.X - screen.Left) * 65535 / Math.Max(1, screen.Width - 1)));
                 input.data.mouse.dy = (int)Math.Max(0, Math.Min(65535, ((long)action.Y - screen.Top) * 65535 / Math.Max(1, screen.Height - 1)));
@@ -335,6 +356,8 @@ namespace AutoMacro
         }
         internal static void Send(Native.Input input)
         { if (Native.SendInput(1, new Native.Input[] { input }, Marshal.SizeOf(typeof(Native.Input))) != 1) throw new InvalidOperationException(L.T("입력을 보내지 못했습니다. 대상 앱의 권한을 확인하세요.")); }
+        internal static bool OnMonitor(int x, int y, IEnumerable<Rectangle> monitors)
+        { foreach (Rectangle monitor in monitors) if (monitor.Contains(x, y)) return true; return false; }
         internal static bool Run(SavedMacro macro, WaitHandle cancel, Action<Native.Input> send, Action<int> progress, bool timed, Func<MacroAction, MacroAction> resolve = null, Action validateTarget = null)
         {
             Stopwatch clock = Stopwatch.StartNew(); Rectangle screen = SystemInformation.VirtualScreen;
@@ -347,9 +370,16 @@ namespace AutoMacro
                     long remaining = ScaledTime(action.At, macro.SpeedPercent) - clock.ElapsedMilliseconds;
                     if (Wait(cancel, timed && remaining > 0 ? (int)Math.Min(Int32.MaxValue, remaining) : 0, validateTarget)) return false;
                     if (resolve != null) action = resolve(action);
+                    if (action.Kind != ActionKind.KeyDown && action.Kind != ActionKind.KeyUp)
+                    {
+                        if (SystemInformation.VirtualScreen != screen) throw new InvalidOperationException(L.T("화면 구성이 변경되어 재생을 중단했습니다."));
+                        List<Rectangle> monitors = new List<Rectangle>(); foreach (Screen monitor in Screen.AllScreens) monitors.Add(monitor.Bounds);
+                        if (!OnMonitor(action.X, action.Y, monitors)) throw new InvalidOperationException(L.T("입력 위치가 화면 밖이어서 재생을 중단했습니다."));
+                    }
+                    Native.Input input = Convert(action, screen);
                     // Include a possibly partially delivered press in cleanup if SendInput fails.
                     if (action.Down) held[action.Identity] = action;
-                    send(Convert(action, screen));
+                    send(input);
                     if (action.Up) held.Remove(action.Identity);
                     if (progress != null) progress(i + 1);
                 }

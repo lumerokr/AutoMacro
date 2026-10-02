@@ -308,7 +308,7 @@ namespace AutoMacro
         static SavedMacro ManagementSample()
         {
             SavedMacro source = new SavedMacro { Name = "편집 원본", Duration = 300, RepeatCount = 3, RepeatDelayMs = 120 };
-            source.Actions.Add(new MacroAction { Kind = ActionKind.Move, At = 10, X = -22, Y = 33 });
+            source.Actions.Add(new MacroAction { Kind = ActionKind.Move, At = 10, X = 22, Y = 33 });
             source.Actions.Add(new MacroAction { Kind = ActionKind.KeyDown, At = 100, Code = 65, Scan = 30 });
             source.Actions.Add(new MacroAction { Kind = ActionKind.KeyUp, At = 200, Code = 65, Scan = 30 });
             return source;
@@ -332,7 +332,7 @@ namespace AutoMacro
             MacroEditing.Delete(edited, new int[] { 0, 0 });
             Check(edited.Actions.Count == 2 && edited.Actions[0].At == 250 && edited.Duration == 450, "delete preserves timing and ignores duplicate indices");
             SavedMacro copy = MacroEditing.Copy(source, true); copy.Actions[0].X = 900;
-            Check(copy.Id != source.Id && copy.RepeatCount == 3 && copy.RepeatDelayMs == 120 && source.Actions[0].X == -22, "duplicate independent identity and actions");
+            Check(copy.Id != source.Id && copy.RepeatCount == 3 && copy.RepeatDelayMs == 120 && source.Actions[0].X == 22, "duplicate independent identity and actions");
             MacroLibrary names = new MacroLibrary(); source.Name = new string('a', 80); names.Items.Add(source);
             string unique = MacroEditing.UniqueName(names, source.Name);
             Check(unique.Length == 80 && names.CheckName(unique, null) == null, "name collision respects 80 character limit");
@@ -398,7 +398,8 @@ namespace AutoMacro
                     while (Field<long>(page, "waitDeadline") == 0 && timeout.ElapsedMilliseconds < 2500) { Application.DoEvents(); Thread.Sleep(10); }
                     Invoke(page, "UpdateUI");
                     Check(Field<long>(page, "waitDeadline") > 0 && Field<Label>(page, "draftInfo").Text.Contains("1/2") && Field<Label>(page, "draftInfo").Text.Contains("다음 반복까지"), "progress shows repeat total and remaining wait");
-                    Check(Field<MacroProgress>(page, "progressBar").Visible && Field<MacroProgress>(page, "progressBar").Fraction == .5, "progress bar reaches first completed repeat");
+                    double timedFraction = Playback.ProgressFraction(current, Field<Stopwatch>(page, "playbackClock").ElapsedMilliseconds, false);
+                    Check(Field<MacroProgress>(page, "progressBar").Visible && Math.Abs(Field<MacroProgress>(page, "progressBar").Fraction - timedFraction) < .02, "progress accounts for repeat waiting time");
                     Invoke(page, "StopPlayback"); PumpUntil(delegate { return !page.Busy; }, "macro emergency stop completes"); Check(!Field<MacroProgress>(page, "progressBar").Visible, "emergency stop clears progress");
                     using (MacroEditorDialog editor = new MacroEditorDialog(current))
                     {
@@ -1011,7 +1012,7 @@ namespace AutoMacro
             Check(key.type == 1 && key.data.keyboard.scan == 30 && key.data.keyboard.flags == 8, "keyboard scan playback");
             Native.Input move = Playback.Convert(new MacroAction { Kind = ActionKind.Move, X = -1920, Y = 0 }, new Rectangle(-1920, 0, 3840, 1080));
             Check(move.data.mouse.dx == 0 && (move.data.mouse.flags & 0x4000) != 0, "negative monitor coordinate");
-            Native.Input wheelInput = Playback.Convert(wheel, new Rectangle(0, 0, 1920, 1080));
+            Native.Input wheelInput = Playback.Convert(wheel, new Rectangle(-1920, 0, 3840, 1080));
             Check(unchecked((int)wheelInput.data.mouse.data) == -120 && (wheelInput.data.mouse.flags & 0x800) != 0, "wheel playback");
             MacroLibrary library = new MacroLibrary(); macro.Name = "테스트 <키보드> & 마우스"; library.Items.Add(macro);
             Check(library.CheckName("  ", null) != null && library.CheckName(macro.Name, null) != null && library.CheckName(macro.Name, macro) == null, "name validation");
@@ -1050,7 +1051,9 @@ namespace AutoMacro
             using (ManualResetEvent cancel = new ManualResetEvent(false))
             {
                 List<Native.Input> sent = new List<Native.Input>();
-                Check(Playback.Run(macro, cancel, delegate(Native.Input input) { sent.Add(input); }, null, false), "one pass complete");
+                SavedMacro playable = MacroEditing.Copy(macro, false);
+                foreach (MacroAction action in playable.Actions) if (action.Kind == ActionKind.Move) action.X = 100;
+                Check(Playback.Run(playable, cancel, delegate(Native.Input input) { sent.Add(input); }, null, false), "one pass complete");
                 Check(sent.Count == macro.Actions.Count, "one pass exact input count");
                 SavedMacro held = new SavedMacro { Duration = 100000 };
                 held.Actions.Add(new MacroAction { Kind = ActionKind.KeyDown, Code = 65, Scan = 30 });

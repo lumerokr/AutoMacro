@@ -10,15 +10,17 @@ namespace AutoMacro
         internal PreparedUpdate Prepared;
         readonly Label latest, message;
         readonly Button check, install;
+        internal readonly Button Notes = new ModernButton();
         readonly ProgressBar progress;
-        readonly CancellationTokenSource cancellation = new CancellationTokenSource();
+        readonly UiBackgroundWork background;
         ReleaseUpdate release;
         bool busy;
         volatile bool closing;
         readonly object gate = new object();
         internal UpdateDialog(ReleaseUpdate detected = null, bool notification = false)
         {
-            Text = L.T(notification ? "새 버전 감지" : "업데이트"); ClientSize = new Size(480, 318); Font = new Font("맑은 고딕", 10);
+            background = new UiBackgroundWork(this);
+            Text = L.T(notification ? "새 버전 감지" : "업데이트"); ClientSize = new Size(480, 372); Font = new Font("맑은 고딕", 10);
             BackColor = Theme.Background; ForeColor = Theme.Ink; StartPosition = FormStartPosition.CenterParent;
             FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = MinimizeBox = false;
             Label current = new Label { Text = String.Format(L.T("현재 버전: {0}"), AppInfo.Version), ForeColor = Theme.Accent };
@@ -30,6 +32,8 @@ namespace AutoMacro
             check = new ModernButton { Text = L.T(notification ? "나중에" : "업데이트 확인") }; install = new ModernButton { Text = L.T("최신 버전으로 업데이트"), Enabled = false };
             check.SetBounds(24, 250, 156, 44); install.SetBounds(192, 250, 264, 44);
             Theme.Button(check, false); Theme.Button(install, true); Controls.Add(check); Controls.Add(install);
+            Notes.Text = L.T("변경 내역 보기"); Notes.SetBounds(24, 306, 432, 42); Theme.Button(Notes, false); Controls.Add(Notes);
+            Notes.Click += delegate { using (UpdateNotesDialog dialog = new UpdateNotesDialog(null, null, false)) dialog.ShowDialog(this); };
             check.Click += delegate { if (notification) { DialogResult = DialogResult.Cancel; Close(); } else Run(false); };
             install.Click += delegate
             {
@@ -43,37 +47,36 @@ namespace AutoMacro
         }
         void Post(Action action)
         {
-            if (closing || IsDisposed || !IsHandleCreated) return;
-            try { BeginInvoke((Action)delegate { if (!closing && !IsDisposed) action(); }); } catch (InvalidOperationException) { }
+            background.Post(action);
         }
         void Run(bool download)
         {
             if (busy) return;
-            busy = true; check.Enabled = install.Enabled = false;
+            busy = true; check.Enabled = install.Enabled = Notes.Enabled = false;
             if (!download) { release = null; latest.Text = L.T("최신 버전: 확인 중"); }
             message.Text = L.T(download ? "업데이트 파일을 다운로드하고 검증하고 있습니다." : "최신 버전을 확인하고 있습니다.");
             progress.Value = 0; progress.Style = download ? ProgressBarStyle.Continuous : ProgressBarStyle.Marquee; progress.Visible = true;
             ReleaseUpdate selected = release;
-            ThreadPool.QueueUserWorkItem(delegate
+            background.Run(delegate(CancellationToken token)
             {
                 PreparedUpdate prepared = null;
                 try
                 {
                     if (download)
                     {
-                        prepared = UpdateService.Prepare(selected, cancellation.Token, delegate(int value) { Post(delegate { progress.Value = value; }); });
+                        prepared = UpdateService.Prepare(selected, token, delegate(int value) { Post(delegate { progress.Value = value; }); });
                         PreparedUpdate ready = prepared;
                         // A close/cancel never leaves a prepared update or installs anything.
                         lock (gate)
                         {
-                            if (cancellation.IsCancellationRequested || closing) { ready.Discard(); return; }
+                            if (token.IsCancellationRequested || closing) { ready.Discard(); return; }
                             Prepared = ready;
                         }
                         Post(delegate { busy = false; DialogResult = DialogResult.OK; Close(); });
                     }
                     else
                     {
-                        ReleaseUpdate found = UpdateService.Check(cancellation.Token);
+                        ReleaseUpdate found = UpdateService.Check(token);
                         Post(delegate { ShowRelease(found); });
                     }
                 }
@@ -81,13 +84,13 @@ namespace AutoMacro
                 catch (Exception error)
                 {
                     string text = error is UpdateFailure ? error.Message : UpdateService.Network;
-                    Post(delegate { busy = false; progress.Visible = false; check.Enabled = true; install.Enabled = false; if (!download) latest.Text = L.T("최신 버전: 확인 실패"); message.Text = L.T(text); });
+                    Post(delegate { busy = false; progress.Visible = false; check.Enabled = Notes.Enabled = true; install.Enabled = false; if (!download) latest.Text = L.T("최신 버전: 확인 실패"); message.Text = L.T(text); });
                 }
             });
         }
         internal void ShowRelease(ReleaseUpdate found)
         {
-            release = found; busy = false; progress.Visible = false; check.Enabled = true; install.Enabled = false;
+            release = found; busy = false; progress.Visible = false; check.Enabled = Notes.Enabled = true; install.Enabled = false;
             if (found == null) { latest.Text = L.T("최신 버전: 등록된 릴리스가 없습니다."); message.Text = L.T("아직 공개된 정식 릴리스가 없습니다. 나중에 다시 확인하세요."); return; }
             latest.Text = String.Format(L.T("최신 버전: {0}"), found.Version.ToString(3));
             if (found.Version <= UpdateService.ParseVersion(AppInfo.Version)) message.Text = L.T("현재 최신 버전을 사용 중입니다.");
@@ -96,13 +99,13 @@ namespace AutoMacro
         }
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
-            lock (gate) { closing = true; cancellation.Cancel(); if (Prepared != null && DialogResult != DialogResult.OK) { Prepared.Discard(); Prepared = null; } }
+            lock (gate) { closing = true; background.Dispose(); if (Prepared != null && DialogResult != DialogResult.OK) { Prepared.Discard(); Prepared = null; } }
             base.OnFormClosing(e);
         }
         protected override void Dispose(bool disposing)
         {
             if (disposing) lock (gate)
-            { closing = true; cancellation.Cancel(); if (Prepared != null && DialogResult != DialogResult.OK) { Prepared.Discard(); Prepared = null; } }
+            { closing = true; background.Dispose(); if (Prepared != null && DialogResult != DialogResult.OK) { Prepared.Discard(); Prepared = null; } }
             base.Dispose(disposing);
         }
     }

@@ -32,6 +32,11 @@ namespace AutoMacro
             var asset = Asset("v1.1.0"); var root = new Dictionary<string, object> { { "tag_name", "v1.1.0" }, { "draft", false }, { "prerelease", false }, { "assets", new object[] { asset } } };
             ReleaseUpdate release = UpdateService.ParseRelease(serializer.Serialize(root));
             Check(release.Version.ToString(3) == "1.1.0" && release.Url != null, "release asset accepted");
+            var legacy = Asset("v1.1.0"); legacy["name"] = UpdateService.LegacyAssetName;
+            legacy["browser_download_url"] = "https://github.com/lumerokr/AutoMacro/releases/download/v1.1.0/" + UpdateService.LegacyAssetName;
+            root["assets"] = new object[] { asset, legacy };
+            Check(UpdateService.ParseRelease(serializer.Serialize(root)).Url.EndsWith(UpdateService.LegacyAssetName), "old program ZIP preferred over old source ZIP");
+            root["assets"] = new object[] { asset };
             Check(release.Notes == "", "old release without notes accepted");
             root["body"] = "## Changes\n- Unicode: 한국어 / 日本語\nhttps://example.com";
             Check(UpdateService.ParseRelease(serializer.Serialize(root)).Notes == (string)root["body"], "release notes remain plain text and preserve Unicode");
@@ -42,16 +47,16 @@ namespace AutoMacro
             Reject(delegate { UpdateService.ParseNotesJson(UpdateService.NotesJson(new ReleaseUpdate { Version = new Version(FutureVersion), Notes = "wrong release" })); }, "cache version must match installed executable");
             Reject(delegate { UpdateService.ParseNotesJson("{}"); }, "broken cached notes rejected");
             foreach (string title in new string[] { "### 다운로드", "## 안내", "## Downloads", "### Notice", "## downloads ##", "다운로드", "Notice", "## ダウンロード" })
-                Check(UpdateNotesDialog.ChangesOnly("# Changes\n- Fixed input\n\n" + title + "\nhidden download or notice").Replace("\r", "") == "# Changes\n- Fixed input", "notes cutoff: " + title);
-            Check(UpdateNotesDialog.ChangesOnly("- Downloads were fixed\n## Notice handling\nKeep this").Contains("Keep this"), "cutoff matches section titles only");
-            Check(UpdateNotesDialog.ChangesOnly("```text\n## Downloads\n```\nKeep this\n## Notice\nhidden").Contains("Keep this"), "code blocks do not trigger cutoff");
-            Check(UpdateNotesDialog.ChangesOnly(null) == "" && UpdateNotesDialog.ChangesOnly("## Downloads\nasset links") == "", "empty changelog handled");
+                Check(ReleaseNotesFormat.ChangesOnly("# Changes\n- Fixed input\n\n" + title + "\nhidden download or notice").Replace("\r", "") == "# Changes\n- Fixed input", "notes cutoff: " + title);
+            Check(ReleaseNotesFormat.ChangesOnly("- Downloads were fixed\n## Notice handling\nKeep this").Contains("Keep this"), "cutoff matches section titles only");
+            Check(ReleaseNotesFormat.ChangesOnly("```text\n## Downloads\n```\nKeep this\n## Notice\nhidden").Contains("Keep this"), "code blocks do not trigger cutoff");
+            Check(ReleaseNotesFormat.ChangesOnly(null) == "" && ReleaseNotesFormat.ChangesOnly("## Downloads\nasset links") == "", "empty changelog handled");
             string bilingual = "# 한국어\n\n### Auto Macro 1.1.0\n\n### 업데이트\n\n- 한국어 변경 내역\n\n### 다운로드\n- 파일\n### 안내\n- 안내 문구\n\n# English\n\n### Auto Macro 1.1.0\n\n### Update\n\n- English changes\n\n### Downloads\n- assets\n### Notice\n- notice text";
-            string koreanChanges = UpdateNotesDialog.ChangesOnly(bilingual, "ko"), englishChanges = UpdateNotesDialog.ChangesOnly(bilingual, "en");
+            string koreanChanges = ReleaseNotesFormat.ChangesOnly(bilingual, "ko"), englishChanges = ReleaseNotesFormat.ChangesOnly(bilingual, "en");
             Check(koreanChanges.Contains("한국어 변경 내역") && !koreanChanges.Contains("다운로드") && !koreanChanges.Contains("English"), "Korean release section only");
             Check(englishChanges.Contains("English changes") && !englishChanges.Contains("Downloads") && !englishChanges.Contains("한국어"), "English release section only");
-            Check(UpdateNotesDialog.ChangesOnly(bilingual, "ja") == englishChanges, "missing Japanese notes fall back to English");
-            Check(UpdateNotesDialog.ChangesOnly(bilingual + "\n# 日本語\n### 更新\n- 日本語の変更\n### ダウンロード\n- ファイル", "ja").Contains("日本語の変更"), "Japanese section supported when provided");
+            Check(ReleaseNotesFormat.ChangesOnly(bilingual, "ja") == englishChanges, "missing Japanese notes fall back to English");
+            Check(ReleaseNotesFormat.ChangesOnly(bilingual + "\n# 日本語\n### 更新\n- 日本語の変更\n### ダウンロード\n- ファイル", "ja").Contains("日本語の変更"), "Japanese section supported when provided");
             root["draft"] = true; Reject(delegate { UpdateService.ParseRelease(serializer.Serialize(root)); }, "draft excluded"); root["draft"] = false;
             root["prerelease"] = true; Reject(delegate { UpdateService.ParseRelease(serializer.Serialize(root)); }, "prerelease excluded"); root["prerelease"] = false;
             root["assets"] = new object[] { asset, asset }; Reject(delegate { UpdateService.ParseRelease(serializer.Serialize(root)); }, "duplicate asset rejected"); root["assets"] = new object[] { asset };

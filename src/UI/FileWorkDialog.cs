@@ -1,7 +1,7 @@
 using System;
 using System.Drawing;
-using System.Threading;
 using System.Runtime.ExceptionServices;
+using System.Threading;
 using System.Windows.Forms;
 
 namespace AutoMacro
@@ -22,17 +22,23 @@ namespace AutoMacro
         internal static T Run<T>(IWin32Window owner, Func<T> work)
         {
             T result = default(T); Exception failure = null;
+            bool started = false;
+            using (ManualResetEvent completed = new ManualResetEvent(false))
             using (FileWorkDialog dialog = new FileWorkDialog())
+            using (UiBackgroundWork background = new UiBackgroundWork(dialog))
             {
                 dialog.Shown += delegate
                 {
-                    ThreadPool.QueueUserWorkItem(delegate
+                    started = background.Run(delegate
                     {
                         try { result = work(); } catch (Exception error) { failure = error; }
-                        finally { dialog.BeginInvoke((Action)delegate { dialog.finished = true; dialog.Close(); }); }
+                        finally { completed.Set(); background.Post(delegate { dialog.finished = true; dialog.Close(); }); }
                     });
                 };
-                dialog.ShowDialog(owner);
+                // Atomic file operations must finish even if their progress window is disposed.
+                // Do not return a default value while a save/restore is still writing.
+                try { dialog.ShowDialog(owner); }
+                finally { if (started) completed.WaitOne(); }
             }
             if (failure != null) ExceptionDispatchInfo.Capture(failure).Throw();
             return result;

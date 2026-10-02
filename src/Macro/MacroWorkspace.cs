@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -25,6 +25,7 @@ namespace AutoMacro
         readonly ContextMenuStrip options = new ContextMenuStrip();
         readonly Label draftInfo = new Label(), message = new Label();
         readonly System.Windows.Forms.Timer refresh = new System.Windows.Forms.Timer();
+        readonly System.Windows.Forms.Timer searchRefresh = new System.Windows.Forms.Timer { Interval = 200 };
         readonly HashSet<Keys> controlDown = new HashSet<Keys>();
         readonly Stopwatch recordClock = new Stopwatch();
         readonly Stopwatch playbackClock = new Stopwatch();
@@ -40,7 +41,8 @@ namespace AutoMacro
         bool changingSort;
         int savedSort;
         int playCount;
-        long playIteration, waitDeadline;
+        long playIteration, waitDeadline, iterationStarted;
+        bool playbackCompleted;
         int playTotal, actionTotal;
         bool playForever;
         IntPtr ownerHandle;
@@ -73,7 +75,8 @@ namespace AutoMacro
             search.SetBounds(74, 212, 250, 29); search.BackColor = Theme.Field; search.ForeColor = Theme.Ink; search.BorderStyle = BorderStyle.FixedSingle; Controls.Add(search);
             sort.SetBounds(338, 212, 206, 29); sort.DropDownStyle = ComboBoxStyle.DropDownList; sort.BackColor = Theme.Field; sort.ForeColor = Theme.Ink; sort.FlatStyle = FlatStyle.Flat;
             sort.Items.AddRange(new object[] { L.T("저장 순서"), L.T("이름순"), L.T("최근 수정순") }); sort.SelectedIndex = 0; Controls.Add(sort);
-            search.TextChanged += delegate { RefreshList(Selected == null ? null : Selected.Id); };
+            searchRefresh.Tick += delegate { RefreshList(Selected == null ? null : Selected.Id); };
+            search.TextChanged += delegate { searchRefresh.Stop(); searchRefresh.Start(); };
             list.SetBounds(20, 250, 524, 112); list.View = View.Details; list.FullRowSelect = true; list.MultiSelect = false; list.HideSelection = false;
             list.BackColor = Theme.Field; list.ForeColor = Theme.Ink; list.BorderStyle = BorderStyle.None; list.HeaderStyle = ColumnHeaderStyle.Nonclickable;
             list.Columns.Add(L.T("이름"), 264); list.Columns.Add(L.T("길이"), 132); list.Columns.Add(L.T("동작 수"), 128); Controls.Add(list);
@@ -143,6 +146,8 @@ namespace AutoMacro
         }
         internal void ResetViewSettings()
         { changingSort = true; sort.SelectedIndex = savedSort = 0; changingSort = false; search.Clear(); RefreshList(Selected == null ? null : Selected.Id); }
+        internal IEnumerable<Keys> SavedRunKeys()
+        { foreach (SavedMacro item in library.Items) if (item.RunKey != Keys.None) yield return item.RunKey; }
         string NextName()
         {
             string root = L.T("매크로 ") + DateTime.Now.ToString("yyyy-MM-dd HHmmss"), value = root; int suffix = 2;
@@ -154,13 +159,14 @@ namespace AutoMacro
         void AddButton(Button button, string text, int x, int y, int width, bool primary)
         { button.Text = text; button.SetBounds(x, y, width, 36); Theme.Button(button, primary); Controls.Add(button); }
         SavedMacro Selected { get { return list.SelectedItems.Count == 0 ? null : list.SelectedItems[0].Tag as SavedMacro; } }
-        static string LengthText(long ms) { return TimeSpan.FromMilliseconds(ms).ToString(@"hh\:mm\:ss") + "." + (ms % 1000).ToString("000"); }
+        internal static string LengthText(long ms) { return (ms / 3600000).ToString("00") + ":" + (ms / 60000 % 60).ToString("00") + ":" + (ms / 1000 % 60).ToString("00") + "." + (ms % 1000).ToString("000"); }
         void RefreshList(string selectedId)
         {
+            searchRefresh.Stop();
             list.BeginUpdate(); list.Items.Clear();
             foreach (SavedMacro item in VisibleItems(library.Items, search.Text, sort.SelectedIndex))
             {
-                ListViewItem row = new ListViewItem(new string[] { item.Name + (item.RunKey == Keys.None ? "" : "  [" + MainForm.KeyName(item.RunKey) + "]"), LengthText(item.Duration), item.Actions.Count.ToString("N0") }); row.Tag = item; list.Items.Add(row);
+                ListViewItem row = new ListViewItem(new string[] { item.Name + (item.RunKey == Keys.None ? "" : "  [" + InputRules.KeyName(item.RunKey) + "]"), LengthText(item.Duration), item.Actions.Count.ToString("N0") }); row.Tag = item; list.Items.Add(row);
                 if (item.Id == selectedId) row.Selected = true;
             }
             if (list.SelectedItems.Count == 0 && list.Items.Count > 0) list.Items[0].Selected = true;
@@ -188,7 +194,7 @@ namespace AutoMacro
             progressBar.Visible = playing;
             play.Enabled = active && monitor != null && Selected != null && !Busy && !capturing;
             for (int i = 0; i < 3; i++) keyButtons[i].Enabled = !Busy && !capturing && !libraryReadOnly;
-            keyNames[0].Text = MainForm.KeyName(library.RecordKey); keyNames[1].Text = MainForm.KeyName(library.PlayKey); keyNames[2].Text = MainForm.KeyName(library.StopKey);
+            keyNames[0].Text = InputRules.KeyName(library.RecordKey); keyNames[1].Text = InputRules.KeyName(library.PlayKey); keyNames[2].Text = InputRules.KeyName(library.StopKey);
             if (recording) draftInfo.Text = L.T("녹화 중  ") + LengthText(recordClock.ElapsedMilliseconds) + "  ·  " + buffer.Actions.Count.ToString("N0") + L.T("개 동작");
             else if (playing)
             {
@@ -204,7 +210,8 @@ namespace AutoMacro
                     string action = deadline != 0 ? L.T("반복 대기") : completed > 0 ? playingMacro.Actions[Math.Min(completed, actionTotal) - 1].Describe() : L.T("시작 대기");
                     draftInfo.Text += "\n" + String.Format(L.T("예상 남은 시간 {0} · 현재 동작: {1}"), estimate, action);
                 }
-                progressBar.Fraction = playForever ? completed / (double)Math.Max(1, actionTotal) : ((iteration - 1) + completed / (double)Math.Max(1, actionTotal)) / Math.Max(1, playTotal);
+                double elapsed = playForever ? Math.Max(0, (Stopwatch.GetTimestamp() - Interlocked.Read(ref iterationStarted)) * 1000.0 / Stopwatch.Frequency) : playbackClock.ElapsedMilliseconds;
+                progressBar.Fraction = playingMacro == null ? 0 : Playback.ProgressFraction(playingMacro, elapsed, false);
                 progressBar.Invalidate();
             }
             else draftInfo.Text = draft == null ? L.T("새 녹화를 만들고 이름을 입력해 저장하세요.") : L.T("저장 전 녹화  ") + LengthText(draft.Duration) + "  ·  " + draft.Actions.Count.ToString("N0") + L.T("개 동작");
@@ -231,17 +238,24 @@ namespace AutoMacro
             if (command == 0 && !recording && !playing && !fileBusy && !TextEntryActive())
                 foreach (SavedMacro item in library.Items) if (item.RunKey == key && RunKeyAvailable(item)) { command = 5; break; }
             if (command == 0 || !active || capturing) return false;
+            if (command != 3 && TextEntryActive())
+            { controlDown.Remove(key); return false; }
             if (down) controlDown.Add(key);
-            else if (controlDown.Remove(key)) Native.PostMessage(ownerHandle, 0x8002, (IntPtr)command, (IntPtr)(int)key);
+            else
+            {
+                if (!controlDown.Remove(key)) return false;
+                Native.PostMessage(ownerHandle, 0x8002, (IntPtr)command, (IntPtr)(int)key);
+            }
             return true;
         }
         internal void HandleCommand(int command, Keys key)
         {
             if (!active || capturing || options.Visible || !FindForm().Enabled) return;
+            // Recheck after the posted key event: focus can change between press and dispatch.
+            if ((command == 1 || command == 2 || command == 5) && TextEntryActive()) return;
             if (command == 4) { if (recording && limitQueued) { EndRecording(); message.Text = L.T("녹화 한도에 도달해 종료했습니다. 녹화 내용을 저장하세요."); } return; }
             if (command == 5)
             {
-                if (TextEntryActive()) return;
                 foreach (SavedMacro item in library.Items) if (item.RunKey == key && RunKeyAvailable(item)) { PlayMacro(item); break; }
                 return;
             }
@@ -253,11 +267,12 @@ namespace AutoMacro
         {
             if (item.RunKey == Keys.None) return false;
             // Saved action/key conflicts were validated on load or edit. Keep hooks fast.
-            if (ReservedKeys != null) foreach (Keys key in ReservedKeys()) if (MainForm.NormalizeKey(key) == MainForm.NormalizeKey(item.RunKey)) return false;
+            if (ReservedKeys != null) foreach (Keys key in ReservedKeys()) if (InputRules.NormalizeKey(key) == InputRules.NormalizeKey(item.RunKey)) return false;
             return true;
         }
+        internal Func<IntPtr> ForegroundWindow = CompatibilityProbe.GetForegroundWindow;
         bool TextEntryActive()
-        { return CompatibilityProbe.GetForegroundWindow() == ownerHandle && (name.Focused || search.Focused); }
+        { return ForegroundWindow() == ownerHandle && (name.Focused || search.Focused); }
         void CaptureAction(MacroAction action)
         {
             if (!recording || limitQueued) return;
@@ -285,7 +300,7 @@ namespace AutoMacro
             recordedWindow = MacroWindows.RecordingWindow(new MacroAction { Kind = ActionKind.KeyDown });
             recordedOriginKnown = MacroWindows.TryOrigin(recordedWindow, out recordedOrigin);
             recordClock.Restart(); recording = true;
-            message.Text = L.T("녹화 중입니다. ") + MainForm.KeyName(library.RecordKey) + L.T("로 종료한 뒤 이름을 입력하고 저장하세요."); UpdateUI();
+            message.Text = L.T("녹화 중입니다. ") + InputRules.KeyName(library.RecordKey) + L.T("로 종료한 뒤 이름을 입력하고 저장하세요."); UpdateUI();
         }
         void EndRecording()
         {
@@ -422,8 +437,7 @@ namespace AutoMacro
             SavedMacro copy = new SavedMacro { Name = selected.Name, Actions = selected.Actions, Duration = selected.Duration,
                 RepeatCount = selected.RepeatCount, RepeatForever = selected.RepeatForever, RepeatDelayMs = selected.RepeatDelayMs, SpeedPercent = selected.SpeedPercent,
                 WindowRelative = selected.WindowRelative, OriginKnown = selected.OriginKnown, RecordedOriginX = selected.RecordedOriginX, RecordedOriginY = selected.RecordedOriginY };
-            copy.Name = selected.Name.Substring(0, Math.Min(selected.Name.Length, 73)) + L.T(" 복사본");
-            if (copy.Name.Length > 80) copy.Name = copy.Name.Substring(0, 80);
+            copy.Name = TextLimits.Truncate(TextLimits.Truncate(selected.Name, 73) + L.T(" 복사본"), 80);
             if (AddCopies(new SavedMacro[] { copy })) message.Text = L.T("매크로를 복제했습니다.");
         }
         internal bool ImportFile(string path)
@@ -542,6 +556,7 @@ namespace AutoMacro
         }
         void PlaySelected()
         {
+            if (searchRefresh.Enabled) RefreshList(Selected == null ? null : Selected.Id);
             PlayMacro(Selected);
         }
         void PlayMacro(SavedMacro selected)
@@ -564,11 +579,11 @@ namespace AutoMacro
                 }
                 finally { capturing = false; controlDown.Clear(); UpdateUI(); }
             }
-            playingMacro = selected; playbackClock.Restart();
+            playingMacro = selected; playbackClock.Reset(); playbackCompleted = false; progressBar.Fraction = 0;
             playing = true; playbackResult = null; playCount = 0; playIteration = 1; waitDeadline = 0; playTotal = selected.RepeatCount; actionTotal = selected.Actions.Count; playForever = selected.RepeatForever;
             System.Globalization.StringInfo display = new System.Globalization.StringInfo(selected.Name);
             string displayName = display.LengthInTextElements > 24 ? display.SubstringByTextElements(0, 24) + "…" : selected.Name;
-            message.Text = String.Format(L.T("재생 매크로: {0}"), displayName) + "\n" + MainForm.KeyName(library.StopKey) + L.T("로 정지") + " · " + String.Format(L.T("재생 속도 {0}배"), (selected.SpeedPercent / 100M).ToString("0.00")); UpdateUI();
+            message.Text = String.Format(L.T("재생 매크로: {0}"), displayName) + "\n" + InputRules.KeyName(library.StopKey) + L.T("로 정지") + " · " + String.Format(L.T("재생 속도 {0}배"), (selected.SpeedPercent / 100M).ToString("0.00")); UpdateUI();
             if (targetWindow != IntPtr.Zero)
             {
                 // Closing the picker and disabling focused controls can restore owner focus.
@@ -580,18 +595,23 @@ namespace AutoMacro
                 }
                 target = TargetFactory(targetWindow);
             }
+            playbackClock.Restart(); Interlocked.Exchange(ref iterationStarted, Stopwatch.GetTimestamp());
             player = new InputJob(delegate(WaitHandle cancelled)
             {
                 string result;
                 try
                 {
                     Action<long, int> progress = delegate(long iteration, int n)
-                    { Interlocked.Exchange(ref playIteration, iteration); Interlocked.Exchange(ref playCount, n); Interlocked.Exchange(ref waitDeadline, 0); };
+                    {
+                        if (n == 0) Interlocked.Exchange(ref iterationStarted, Stopwatch.GetTimestamp());
+                        Interlocked.Exchange(ref playIteration, iteration); Interlocked.Exchange(ref playCount, n); Interlocked.Exchange(ref waitDeadline, 0);
+                    };
                     Action<int> waiting = delegate(int pause)
                     { Interlocked.Exchange(ref waitDeadline, Stopwatch.GetTimestamp() + (long)pause * Stopwatch.Frequency / 1000); };
                     Func<MacroAction, MacroAction> resolve = target == null ? (Func<MacroAction, MacroAction>)null : delegate(MacroAction action) { return target.Resolve(selected, action); };
                     Action validate = target == null ? (Action)null : target.CheckAvailable;
                     bool completed = Playback.RunRepeated(selected, cancelled, PlaybackSink, progress, true, waiting, resolve, validate);
+                    playbackCompleted = completed;
                     result = completed ? L.T("재생을 완료했습니다.") : L.T("재생을 정지했습니다.");
                 }
                 catch (Exception error) { result = L.T("재생 중단: ") + error.Message; }
@@ -606,6 +626,7 @@ namespace AutoMacro
         void FinishPlayback()
         {
             if (player == null || !player.Completed) return;
+            if (playbackCompleted) progressBar.Fraction = 1;
             player.Dispose(); player = null; playing = false; stopping = false; playbackClock.Stop(); playingMacro = null;
             message.Text = playbackResult ?? L.T("재생을 정지했습니다."); UpdateUI();
         }
@@ -638,7 +659,7 @@ namespace AutoMacro
         }
         internal string ValidateClickerKey(Keys key)
         {
-            foreach (SavedMacro item in library.Items) if (item.RunKey != Keys.None && MainForm.NormalizeKey(item.RunKey) == MainForm.NormalizeKey(key)) return L.T("다른 매크로의 실행 단축키와 중복됩니다.");
+            foreach (SavedMacro item in library.Items) if (item.RunKey != Keys.None && InputRules.NormalizeKey(item.RunKey) == InputRules.NormalizeKey(key)) return L.T("다른 매크로의 실행 단축키와 중복됩니다.");
             return null;
         }
         bool SaveRunKey(SavedMacro selected, Keys key)
@@ -726,7 +747,7 @@ namespace AutoMacro
             {
                 active = false; recording = false; StopPlayback();
                 if (monitor != null) { monitor.Dispose(); monitor = null; }
-                refresh.Stop(); refresh.Dispose(); if (player != null) player.Dispose();
+                refresh.Stop(); refresh.Dispose(); searchRefresh.Stop(); searchRefresh.Dispose(); if (player != null) player.Dispose();
                 options.Dispose();
             }
             base.Dispose(disposing);

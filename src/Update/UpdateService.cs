@@ -32,7 +32,8 @@ namespace AutoMacro
     }
     internal static class UpdateService
     {
-        internal const string AssetName = "AutoMacro-update.zip";
+        internal const string AssetName = "AutoMacro.zip";
+        internal const string LegacyAssetName = "AutoMacro-update.zip";
         internal const long MaxBytes = 64 * 1024 * 1024;
         internal const string Invalid = "업데이트 파일이 올바르지 않습니다. 기존 프로그램은 유지됩니다.";
         internal const string Network = "업데이트 서버에 연결하지 못했습니다. 인터넷 연결을 확인하고 다시 시도하세요.";
@@ -59,14 +60,22 @@ namespace AutoMacro
                 if (body != null && !(body is string)) throw new UpdateFailure(Invalid);
                 ReleaseUpdate result = new ReleaseUpdate { Version = version, Tag = tag, Notes = body as string ?? "" };
                 if (assets == null) throw new UpdateFailure(Invalid);
+                // Older releases used AutoMacro.zip for source; their program asset takes priority.
+                string selectedName = AssetName;
                 foreach (object item in assets)
                 {
                     var asset = item as Dictionary<string, object>;
                     if (asset == null) throw new UpdateFailure(Invalid);
-                    if ((asset["name"] as string) != AssetName) continue;
+                    if ((asset["name"] as string) == LegacyAssetName) selectedName = LegacyAssetName;
+                }
+                foreach (object item in assets)
+                {
+                    var asset = item as Dictionary<string, object>;
+                    if (asset == null) throw new UpdateFailure(Invalid);
+                    if ((asset["name"] as string) != selectedName) continue;
                     if (result.Url != null) throw new UpdateFailure(Invalid);
                     string url = asset["browser_download_url"] as string, digest = asset["digest"] as string;
-                    if (url != "https://github.com/lumerokr/AutoMacro/releases/download/" + Uri.EscapeDataString(tag) + "/" + AssetName || digest == null || !Regex.IsMatch(digest, "^sha256:[a-fA-F0-9]{64}$")) throw new UpdateFailure(Invalid);
+                    if (url != "https://github.com/lumerokr/AutoMacro/releases/download/" + Uri.EscapeDataString(tag) + "/" + selectedName || digest == null || !Regex.IsMatch(digest, "^sha256:[a-fA-F0-9]{64}$")) throw new UpdateFailure(Invalid);
                     long size = Convert.ToInt64(asset["size"]);
                     if (size <= 0 || size > MaxBytes || (asset["state"] as string) != "uploaded") throw new UpdateFailure(Invalid);
                     result.Url = url; result.Digest = digest.Substring(7).ToLowerInvariant(); result.Size = size;
@@ -242,7 +251,7 @@ namespace AutoMacro
             if (folder == null || !Regex.IsMatch(Path.GetFileName(folder), @"^\.automacro-update-[a-f0-9]{32}$")) return;
             try
             {
-                foreach (string name in new string[] { AssetName, "payload.exe", "installer.exe", "ready", "awaiting-user", "release-notes.json" })
+                foreach (string name in new string[] { AssetName, LegacyAssetName, "payload.exe", "installer.exe", "ready", "awaiting-user", "release-notes.json" })
                 { string path = Path.Combine(folder, name); if (File.Exists(path)) File.Delete(path); }
                 Directory.Delete(folder, false);
             }

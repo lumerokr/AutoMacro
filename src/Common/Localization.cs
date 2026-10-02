@@ -95,6 +95,14 @@ namespace AutoMacro
         }
         internal static readonly Dictionary<string, string[]> Messages = new Dictionary<string, string[]>
         {
+            { "매크로 실행 단축키와 겹치지 않도록 Clicker 키를 조정했습니다.", new string[] { "Clicker keys were adjusted to avoid saved macro hotkeys.", "保存済みマクロの実行キーと重複しないようClickerキーを調整しました。" } },
+            { "중복되지 않는 Clicker 키를 찾지 못했습니다. 매크로 실행 단축키를 확인하세요.", new string[] { "No unused Clicker key was available. Check the saved macro hotkeys.", "重複しないClickerキーが見つかりません。マクロの実行キーを確認してください。" } },
+            { "입력 위치가 화면 밖이어서 재생을 중단했습니다.", new string[] { "Playback stopped because the input position is outside the screen.", "入力位置が画面の外にあるため再生を停止しました。" } },
+            { "화면 구성이 변경되어 재생을 중단했습니다.", new string[] { "Playback stopped because the screen configuration changed.", "画面構成が変更されたため再生を停止しました。" } },
+            { "종료", new string[] { "Exit", "終了" } },
+            { "변경 내역 보기", new string[] { "View changes", "変更内容を見る" } },
+            { "업데이트 내용", new string[] { "Release notes", "更新内容" } },
+            { "현재 버전의 변경 내역입니다.", new string[] { "Changes in the current version.", "現在のバージョンの変更内容です。" } },
             { "업데이트 완료", new string[] { "Update complete", "更新完了" } },
             { "업데이트 내용을 불러오고 있습니다.", new string[] { "Loading release notes...", "更新内容を読み込んでいます。" } },
             { "업데이트가 완료되었습니다. 변경 내용을 확인하세요.", new string[] { "The update is complete. Review the changes below.", "更新が完了しました。変更内容をご確認ください。" } },

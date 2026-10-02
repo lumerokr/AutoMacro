@@ -48,9 +48,9 @@ namespace AutoMacro
                 json.Append("]}]}"); File.WriteAllText(path, json.ToString());
                 Reject(delegate { MacroLibrary.Load(path); }, "JSON per-macro action count is rejected before decoding entries");
                 library = new MacroLibrary(); library.Items.Add(sample); library.Save(path);
-                SavedMacro copy = MacroEditing.Copy(sample, true); copy.Name = "SAMPLE"; library.Items.Add(copy); library.Save(path);
-                bool duplicate = false; try { MacroLibrary.Load(path); } catch (FormatException) { duplicate = true; }
-                Check(duplicate, "indexed name validation still rejects duplicate names");
+                SavedMacro copy = MacroEditing.Copy(sample, true); copy.Name = "SAMPLE"; library.Items.Add(copy);
+                bool duplicate = false; try { library.Save(path); } catch (FormatException) { duplicate = true; }
+                Check(duplicate && MacroLibrary.Load(path).Items.Count == 1, "duplicate names are rejected before saving and preserve the valid library");
             }
             finally { foreach (string file in new string[] { path, path + ".bak", path + ".tmp" }) if (File.Exists(file)) File.Delete(file); }
         }

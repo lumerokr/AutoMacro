@@ -1,7 +1,7 @@
-﻿param([string]$OutputZip = (Join-Path (Split-Path $PSScriptRoot -Parent) 'AutoMacro.zip'), [switch]$UpdateOnly)
+﻿param([string]$OutputZip = (Join-Path (Split-Path $PSScriptRoot -Parent) 'AutoMacro-source.zip'), [switch]$UpdateOnly)
 $ErrorActionPreference = 'Stop'
 if ($UpdateOnly -and !$PSBoundParameters.ContainsKey('OutputZip')) {
-    $OutputZip = Join-Path (Split-Path $PSScriptRoot -Parent) 'AutoMacro-update.zip'
+    $OutputZip = Join-Path (Split-Path $PSScriptRoot -Parent) 'AutoMacro.zip'
 }
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $root = [IO.Path]::GetFullPath($PSScriptRoot)
@@ -30,4 +30,10 @@ try {
     if (Test-Path -LiteralPath $destination) { [IO.File]::Replace($staged, $destination, [System.Management.Automation.Language.NullString]::Value) }
     else { [IO.File]::Move($staged, $destination) }
     Write-Output "Package created: $destination"
+    if ($UpdateOnly -and !$PSBoundParameters.ContainsKey('OutputZip')) {
+        $legacyDestination = Join-Path (Split-Path $destination -Parent) 'AutoMacro-update.zip'
+        Copy-Item -LiteralPath $destination -Destination $legacyDestination -Force
+        if ((Get-FileHash -LiteralPath $destination).Hash -ne (Get-FileHash -LiteralPath $legacyDestination).Hash) { throw 'Compatibility package mismatch.' }
+        Write-Output "Compatibility package created: $legacyDestination"
+    }
 } finally { if (Test-Path -LiteralPath $staged) { Remove-Item -LiteralPath $staged } }

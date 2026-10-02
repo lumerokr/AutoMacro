@@ -34,7 +34,7 @@ namespace AutoMacro
             while (library.CheckName(candidate, null) != null)
             {
                 string suffix = " (" + number++ + ")";
-                candidate = original.Substring(0, Math.Min(original.Length, 80 - suffix.Length)) + suffix;
+                candidate = TextLimits.Truncate(original, 80 - suffix.Length) + suffix;
             }
             return candidate;
         }
@@ -48,7 +48,7 @@ namespace AutoMacro
             {
                 SavedMacro copy = Copy(source, true); string original = copy.Name.Trim(), candidate = original; int number = 2;
                 while (!names.Add(candidate))
-                { string suffix = " (" + number++ + ")"; candidate = original.Substring(0, Math.Min(original.Length, 80 - suffix.Length)) + suffix; }
+                { string suffix = " (" + number++ + ")"; candidate = TextLimits.Truncate(original, 80 - suffix.Length) + suffix; }
                 copy.Name = candidate; result.Add(copy);
             }
             return result;
@@ -115,7 +115,9 @@ namespace AutoMacro
         internal readonly Button Undo = new ModernButton();
         sealed class Snapshot
         {
-            internal SavedMacro Macro;
+            internal long Duration, Delta;
+            internal int TimeIndex = -1;
+            internal readonly List<KeyValuePair<int, MacroAction>> Deleted = new List<KeyValuePair<int, MacroAction>>();
             internal readonly List<int> Expanded = new List<int>(), Selected = new List<int>();
         }
         readonly List<Snapshot> history = new List<Snapshot>();
@@ -164,7 +166,9 @@ namespace AutoMacro
                 Delay.Validate(); int index = Model.Rows[Actions.SelectedIndices[0]].Index;
                 if ((long)Delay.Value == Edited.Actions[index].At - (index == 0 ? 0 : Edited.Actions[index - 1].At)) return;
                 Snapshot before = CaptureSnapshot();
+                long oldAt = Edited.Actions[index].At;
                 if (!MacroEditing.SetDelay(Edited, index, (long)Delay.Value)) { status.Text = L.T("전체 길이는 24시간을 넘을 수 없습니다."); return; }
+                before.TimeIndex = index; before.Delta = oldAt - Edited.Actions[index].At;
                 Remember(before);
                 Actions.Invalidate(); status.Text = L.T("시간을 수정했습니다. 저장을 눌러 반영하세요."); UpdateSelection();
             };
@@ -178,7 +182,10 @@ namespace AutoMacro
                     else selected.Add(row.Index);
                 }
                 if (selected.Count == 0) return;
-                Remember(CaptureSnapshot());
+                Snapshot before = CaptureSnapshot();
+                List<int> indices = new List<int>(selected); indices.Sort();
+                foreach (int index in indices) before.Deleted.Add(new KeyValuePair<int, MacroAction>(index, Edited.Actions[index]));
+                Remember(before);
                 List<MacroAction> expanded = new List<MacroAction>();
                 foreach (LogGroup group in Model.Groups) if (group.Expanded) expanded.Add(Edited.Actions[group.First]);
                 RebuildList(delegate
@@ -198,15 +205,17 @@ namespace AutoMacro
         }
         Snapshot CaptureSnapshot()
         {
-            Snapshot snapshot = new Snapshot { Macro = MacroEditing.Copy(Edited, false) };
+            Snapshot snapshot = new Snapshot { Duration = Edited.Duration };
             foreach (LogGroup group in Model.Groups) if (group.Expanded) snapshot.Expanded.Add(group.First);
             foreach (int row in Actions.SelectedIndices) snapshot.Selected.Add(row);
             return snapshot;
         }
         void Remember(Snapshot snapshot)
         {
-            history.Add(snapshot); long actions = 0; foreach (Snapshot item in history) actions += item.Macro.Actions.Count;
-            while (history.Count > 1 && (history.Count > 20 || actions > 500000)) { actions -= history[0].Macro.Actions.Count; history.RemoveAt(0); }
+            history.Add(snapshot); long retained = 0;
+            foreach (Snapshot item in history) retained += item.Deleted.Count + item.Selected.Count + item.Expanded.Count;
+            while (history.Count > 1 && (history.Count > 20 || retained > 500000))
+            { retained -= history[0].Deleted.Count + history[0].Selected.Count + history[0].Expanded.Count; history.RemoveAt(0); }
             Undo.Enabled = true;
         }
         internal void UndoEdit()
@@ -215,7 +224,21 @@ namespace AutoMacro
             Snapshot previous = history[history.Count - 1]; history.RemoveAt(history.Count - 1);
             RebuildList(delegate
             {
-                Edited.Actions = previous.Macro.Actions; Edited.Duration = previous.Macro.Duration; Model = new MacroLogModel(Edited);
+                if (previous.TimeIndex >= 0)
+                    for (int i = previous.TimeIndex; i < Edited.Actions.Count; i++) Edited.Actions[i].At += previous.Delta;
+                else
+                {
+                    int total = Edited.Actions.Count + previous.Deleted.Count;
+                    List<MacroAction> restored = new List<MacroAction>(total);
+                    int deleted = 0, remaining = 0;
+                    while (restored.Count < total)
+                    {
+                        if (deleted < previous.Deleted.Count && previous.Deleted[deleted].Key == restored.Count) restored.Add(previous.Deleted[deleted++].Value);
+                        else restored.Add(Edited.Actions[remaining++]);
+                    }
+                    Edited.Actions = restored;
+                }
+                Edited.Duration = previous.Duration; Model = new MacroLogModel(Edited);
                 foreach (int first in previous.Expanded)
                 {
                     int row = Model.Rows.FindIndex(delegate(LogRow item) { return item.Summary && item.Index == first; });

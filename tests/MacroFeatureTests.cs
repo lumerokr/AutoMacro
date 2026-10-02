@@ -39,6 +39,14 @@ namespace AutoMacro
             Check(Playback.ScaledTime(1001, 200) == 501 && Playback.ScaledTime(100, 50) == 200, "speed scales absolute timing without early rounding");
             first.RepeatCount = 3; first.RepeatDelayMs = 70;
             Check(Playback.TotalMilliseconds(first) == 440, "speed leaves repeat delay unchanged");
+            Check(Math.Abs(Playback.ProgressFraction(first, 100, false) - 100.0 / 440) < 0.000001, "progress includes unchanged repeat pauses at changed speed");
+            Check(Playback.ProgressFraction(first, 440, false) < 1 && Playback.ProgressFraction(first, 9999, false) < 1 && Playback.ProgressFraction(first, 440, true) == 1, "100 percent requires successful worker completion");
+            SavedMacro tail = Sample("trailing wait"); tail.Duration = 1000;
+            Check(Playback.ProgressFraction(tail, 200, false) == 0.2, "last input does not complete trailing wait progress");
+            tail.RepeatForever = true; tail.RepeatDelayMs = 500;
+            Check(Math.Abs(Playback.ProgressFraction(tail, 1200, false) - 0.8) < 0.000001, "infinite iteration includes repeat wait");
+            tail.Duration = 0; tail.RepeatForever = false;
+            Check(Playback.ProgressFraction(tail, 0, false) == 0 && Playback.ProgressFraction(tail, 0, true) == 1, "zero-duration macro needs completion confirmation");
             first.Duration = 0; first.SpeedPercent = 1000; first.RepeatDelayMs = 0;
             Check(Playback.RepeatPause(first) == 10, "minimum repeat interval at high speed");
             first = Sample("first"); first.RunKey = Keys.F10; first.SpeedPercent = 50; library.Items[0] = first;
@@ -126,6 +134,7 @@ namespace AutoMacro
                 form.Show(); Invoke(form, "SelectPage", true); Application.DoEvents();
                 MacroWorkspace page = Field<MacroWorkspace>(form, "macroWorkspace");
                 MacroLibrary library = Field<MacroLibrary>(page, "library");
+                VerifyTypingGuards(form, page, library);
                 SavedMacro first = Sample("first"), second = Sample("second"); second.Duration = 5000; second.RunKey = Keys.F10; second.SpeedPercent = 200;
                 library.Items.Add(first); library.Items.Add(second); Invoke(page, "RefreshList", first.Id);
                 page.PlaybackSink = delegate { };
@@ -140,8 +149,8 @@ namespace AutoMacro
                 Check((bool)Invoke(page, "SaveRunKey", first, Keys.XButton1), "UI accepts thumb shortcut");
                 Check(Invoke(form, "ValidateCapture", 1, Keys.XButton1) != null, "clicker rejects assigned macro key");
                 TextBox search = Field<TextBox>(page, "search"); ComboBox sort = Field<ComboBox>(page, "sort"); DarkListView list = Field<DarkListView>(page, "list");
-                search.Text = "SECOND"; Application.DoEvents(); Check(list.Items.Count == 1 && list.Items[0].Tag == second, "search selects correct underlying macro");
-                search.Text = "missing"; Application.DoEvents(); Check(list.Items.Count == 0 && !Field<Button>(page, "play").Enabled, "empty result cannot run selected macro");
+                search.Text = "SECOND"; PumpSearch(page); Check(list.Items.Count == 1 && list.Items[0].Tag == second, "search selects correct underlying macro");
+                search.Text = "missing"; PumpSearch(page); Check(list.Items.Count == 0 && !Field<Button>(page, "play").Enabled, "empty result cannot run selected macro");
                 search.Text = ""; second.Modified = DateTime.Now.AddMinutes(1); sort.SelectedIndex = 2; Application.DoEvents();
                 Check(list.Items[0].Tag == second && library.Items[0] == first, "UI recent sort preserves storage order");
                 Invoke(page, "RefreshList", second.Id);
@@ -159,6 +168,7 @@ namespace AutoMacro
                     Check(!MacroWindows.TryOrigin(targetWindow.Handle, out after), "minimized window unavailable"); targetWindow.Close();
                 }
                 VerifyWindowPlayback(form, page);
+                VerifyTimedProgress(page);
                 foreach (string language in new string[] { "en", "ja", "ko" })
                 {
                     form.ApplyLanguage(language);
@@ -169,6 +179,65 @@ namespace AutoMacro
                 form.Close();
             }
             VerifySortPersistenceAndRollback();
+        }
+        static void VerifyTypingGuards(MainForm form, MacroWorkspace page, MacroLibrary library)
+        {
+            Keys record = library.RecordKey, play = library.PlayKey, stop = library.StopKey;
+            Func<IntPtr> foreground = page.ForegroundWindow;
+            try
+            {
+                library.RecordKey = Keys.B; library.PlayKey = Keys.C; library.StopKey = Keys.D;
+                page.ForegroundWindow = delegate { return form.Handle; };
+                foreach (TextBox entry in new TextBox[] { Field<TextBox>(page, "name"), Field<TextBox>(page, "search") })
+                {
+                    entry.Focus(); Application.DoEvents(); Check(entry.Focused, "entry focused for shortcut regression");
+                    foreach (Keys key in new Keys[] { Keys.B, Keys.C })
+                    {
+                        Check(!(bool)Invoke(page, "ControlInput", key, true) && !(bool)Invoke(page, "ControlInput", key, false), "typing is not swallowed by recording/play shortcut");
+                    }
+                    Invoke(page, "HandleCommand", 1, Keys.B); Invoke(page, "HandleCommand", 2, Keys.C);
+                    Check(!page.Busy, "posted recording/play commands cannot start while typing");
+                    Check((bool)Invoke(page, "ControlInput", Keys.D, true), "emergency stop retained in text input");
+                    Invoke(page, "HandleCommand", 3, Keys.D); Field<HashSet<Keys>>(page, "controlDown").Clear();
+                    page.ForegroundWindow = delegate { return IntPtr.Zero; };
+                    Check(!(bool)Invoke(page, "ControlInput", Keys.B, false), "focus change does not swallow an uncaptured key release");
+                    Check((bool)Invoke(page, "ControlInput", Keys.B, true), "external application still accepts record shortcut");
+                    Field<HashSet<Keys>>(page, "controlDown").Clear();
+                    page.ForegroundWindow = delegate { return form.Handle; };
+                }
+            }
+            finally
+            {
+                library.RecordKey = record; library.PlayKey = play; library.StopKey = stop;
+                page.ForegroundWindow = foreground; Field<HashSet<Keys>>(page, "controlDown").Clear();
+                Field<DarkListView>(page, "list").Focus();
+            }
+        }
+        static void VerifyTimedProgress(MacroWorkspace page)
+        {
+            SavedMacro macro = Sample("timed progress"); macro.Actions[0].At = 0; macro.Actions[1].At = 20;
+            macro.Duration = 700; macro.RepeatCount = 2; macro.RepeatDelayMs = 250;
+            page.PlaybackSink = delegate { };
+            Invoke(page, "PlayMacro", macro);
+            MacroProgress progress = Field<MacroProgress>(page, "progressBar"); Stopwatch watch = Stopwatch.StartNew();
+            while (Field<int>(page, "playCount") < 2) { Application.DoEvents(); Thread.Sleep(5); Check(watch.ElapsedMilliseconds < 3000, "early input completes"); }
+            Invoke(page, "UpdateUI"); Check(progress.Fraction < 0.5 && page.Busy, "last action does not fill the bar while trailing wait remains");
+            while (ReadDeadline(page) == 0) { Application.DoEvents(); Thread.Sleep(5); Check(watch.ElapsedMilliseconds < 3000, "repeat wait starts"); }
+            Invoke(page, "UpdateUI"); double before = progress.Fraction;
+            Stopwatch wait = Stopwatch.StartNew(); while (wait.ElapsedMilliseconds < 80) { Application.DoEvents(); Thread.Sleep(5); }
+            Invoke(page, "UpdateUI"); Check(progress.Fraction > before && progress.Fraction < 1, "repeat waiting advances time-based progress");
+            while (page.Busy) { Application.DoEvents(); Thread.Sleep(5); Check(watch.ElapsedMilliseconds < 4000, "timed playback completes"); }
+            Check(progress.Fraction == 1, "success confirms full progress");
+            Invoke(page, "PlayMacro", macro); page.RequestStop(); watch.Restart();
+            while (page.Busy) { Application.DoEvents(); Thread.Sleep(5); Check(watch.ElapsedMilliseconds < 3000, "cancel progress test completes"); }
+            Check(progress.Fraction < 1, "cancelled playback is not marked complete");
+        }
+        static long ReadDeadline(MacroWorkspace page) { return Field<long>(page, "waitDeadline"); }
+        static void PumpSearch(MacroWorkspace page)
+        {
+            Stopwatch watch = Stopwatch.StartNew();
+            while (Field<System.Windows.Forms.Timer>(page, "searchRefresh").Enabled)
+            { Application.DoEvents(); Thread.Sleep(5); Check(watch.ElapsedMilliseconds < 3000, "search finishes after typing"); }
         }
         static void VerifyWindowPlayback(MainForm form, MacroWorkspace page)
         {
