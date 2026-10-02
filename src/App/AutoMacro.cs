@@ -428,6 +428,7 @@ namespace AutoMacro
             clickerMenu.Click += delegate { SelectPage(false); };
             macroMenu.Click += delegate { SelectPage(true); };
             macroWorkspace = new MacroWorkspace(persistence); macroWorkspace.Location = new Point(28, 148);
+            macroWorkspace.ReservedKeys = delegate { return new Keys[] { toggleKey, stopKey, macroKey }; };
             Controls.Add(macroWorkspace); macroWorkspace.Visible = false;
             macroWorkspace.StateChanged += delegate
             {
@@ -519,6 +520,7 @@ namespace AutoMacro
                 {
                     Preferences defaults = new Preferences(); mode.SelectedIndex = defaults.Mode; interval.Value = defaults.Interval;
                     holdWindow.Checked = false; macroKey = defaults.Macro; toggleKey = defaults.Toggle; stopKey = defaults.Stop;
+                    macroWorkspace.ResetViewSettings();
                     ApplyLanguage(L.WindowsDefault());
                 }
                 finally { settingsReady = ready; }
@@ -603,7 +605,7 @@ namespace AutoMacro
             macroPage = showMacro;
             foreach (Control control in clickerControls) control.Visible = !macroPage;
             macroWorkspace.Visible = macroPage;
-            ClientSize = new Size(620, macroPage ? 794 : 878);
+            ClientSize = new Size(620, macroPage ? 828 : 878);
             if (macroPage && Visible) macroWorkspace.Activate(Handle);
             clickerMenu.ForeColor = macroPage ? Theme.Muted : Theme.Accent;
             macroMenu.ForeColor = macroPage ? Theme.Accent : Theme.Muted;
@@ -662,6 +664,7 @@ namespace AutoMacro
         string ValidateCapture(int target, Keys key)
         {
             if (key == Keys.None) return L.T("키를 다시 눌러주세요.");
+            if (macroWorkspace != null && macroWorkspace.ValidateClickerKey(key) != null) return macroWorkspace.ValidateClickerKey(key);
             if (target == 0)
                 return ValidateKeys(toggleKey, stopKey, key);
             Keys normalized = NormalizeKey(key);

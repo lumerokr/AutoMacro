@@ -861,13 +861,13 @@ namespace AutoMacro
             Rectangle row = list.Items[1].Bounds;
             Invoke(list, "OnMouseUp", new MouseEventArgs(MouseButtons.Right, 1, row.Left + 20, row.Top + 4, 0));
             ContextMenuStrip menu = Field<ContextMenuStrip>(page, "options");
-            Check(menu.Visible && menu.Items.Count == 7 && list.SelectedItems[0].Tag == second, "right click targets clicked row");
+            Check(menu.Visible && menu.Items.Count == 10 && list.SelectedItems[0].Tag == second, "right click targets clicked row");
             Check(menu.Items[0].Text == "내용 보기" && menu.Items[1].Text == "이름 변경" && menu.Items[2].Text == "반복 설정" && menu.Items[3].Text == "삭제", "context options");
             menu.Close();
             DialogAction(form, "반복 설정", delegate(Form dialog)
             {
                 foreach (Control c in dialog.Controls)
-                    if (c is NumericUpDown) ((NumericUpDown)c).Value = ((NumericUpDown)c).Minimum == 1 ? 3 : 20;
+                    if (c is NumericUpDown) ((NumericUpDown)c).Value = ((NumericUpDown)c).DecimalPlaces > 0 ? 2 : ((NumericUpDown)c).Minimum == 1 ? 3 : 20;
                 ((Button)dialog.AcceptButton).PerformClick();
             }, delegate { ((ToolStripMenuItem)menu.Items[2]).PerformClick(); });
             Check(second.RepeatCount == 3 && second.RepeatDelayMs == 20 && MacroLibrary.Load(path).Items[1].RepeatCount == 3, "repeat dialog persists per item");

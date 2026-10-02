@@ -14,7 +14,7 @@ namespace AutoMacro
             Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
             if (args.Length > 0 && args[0] == "--ui-test")
             {
-                try { MacroTests.RunUI(); return 0; }
+                try { MacroTests.RunUI(); MacroFeatureTests.RunUI(); return 0; }
                 catch (Exception error) { Console.Error.WriteLine(error); return 20; }
             }
             if (args.Length > 0 && args[0] == "--self-test")
@@ -55,6 +55,7 @@ namespace AutoMacro
                     }
                     finally { if (File.Exists(testPath)) File.Delete(testPath); }
                     StorageCleanupTests.Run();
+                    MacroFeatureTests.Run();
                     MacroTests.Run();
                     return 0;
                 }

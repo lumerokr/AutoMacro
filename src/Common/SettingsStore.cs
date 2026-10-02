@@ -22,7 +22,7 @@ namespace AutoMacro
             return new DataNode("AutoMacro", new DataField("version", 1), new DataNode("Mode", 0), new DataNode("Interval", 100),
                 new DataNode("Macro", (int)System.Windows.Forms.Keys.Space), new DataNode("Toggle", (int)System.Windows.Forms.Keys.F6),
                 new DataNode("Stop", (int)System.Windows.Forms.Keys.F8), new DataNode("HoldWindow", false),
-                new DataNode("Language", L.WindowsDefault()), new DataNode("NoticeVersion", 1), new DataNode("Acknowledged", false));
+                new DataNode("Language", L.WindowsDefault()), new DataNode("NoticeVersion", 1), new DataNode("Acknowledged", false), new DataNode("MacroSort", 0));
         }
         internal static bool IsValid(string path)
         {
@@ -33,6 +33,7 @@ namespace AutoMacro
                 string language = (string)root.Element("Language");
                 if (language != null && language != "ko" && language != "en" && language != "ja") return false;
                 int? version = (int?)root.Element("NoticeVersion"); bool? accepted = (bool?)root.Element("Acknowledged");
+                int sort = (int?)root.Element("MacroSort") ?? 0; if (sort < 0 || sort > 2) return false;
                 return (!version.HasValue || version.Value == 1) && (!accepted.HasValue || version.HasValue);
             }
             catch { return false; }

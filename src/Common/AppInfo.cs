@@ -7,7 +7,7 @@ namespace AutoMacro
 {
     internal static class AppInfo
     {
-        internal const string AssemblyVersion = "1.0.2.0";
+        internal const string AssemblyVersion = "1.1.0.0";
         internal static string Version { get { return typeof(AppInfo).Assembly.GetName().Version.ToString(3); } }
         internal static string TestDataDirectory;
         internal static string DataDirectory { get { return TestDataDirectory ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AutoMacro"); } }

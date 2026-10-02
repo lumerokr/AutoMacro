@@ -11,6 +11,7 @@ namespace AutoMacro
 {
     internal static class UpdateTests
     {
+        static readonly string FutureVersion = new Version(new Version(AppInfo.Version).Major, new Version(AppInfo.Version).Minor + 1, 0).ToString();
         static void Check(bool value, string message) { if (!value) throw new Exception("Update test: " + message); }
         static void Reject(Action action, string name)
         { bool rejected = false; try { action(); } catch (UpdateFailure) { rejected = true; } Check(rejected, name); }
@@ -147,11 +148,11 @@ namespace AutoMacro
                         dialog.ShowRelease(null); Check(!install.Enabled, "no release cannot install");
                         dialog.ShowRelease(new ReleaseUpdate { Version = new Version(AppInfo.Version), Url = "test" }); Check(!install.Enabled, "current version cannot install");
                         dialog.ShowRelease(new ReleaseUpdate { Version = new Version("0.9.0"), Url = "test" }); Check(!install.Enabled, "cannot downgrade");
-                        dialog.ShowRelease(new ReleaseUpdate { Version = new Version("1.1.0") }); Check(!install.Enabled, "missing asset cannot install");
-                        dialog.ShowRelease(new ReleaseUpdate { Version = new Version("1.1.0"), Url = "test" }); Check(install.Enabled, "new update can install");
+                        dialog.ShowRelease(new ReleaseUpdate { Version = new Version(FutureVersion) }); Check(!install.Enabled, "missing asset cannot install");
+                        dialog.ShowRelease(new ReleaseUpdate { Version = new Version(FutureVersion), Url = "test" }); Check(install.Enabled, "new update can install");
                         dialog.Close();
                     }
-                    using (UpdateDialog notice = new UpdateDialog(new ReleaseUpdate { Version = new Version("1.1.0"), Url = "test" }, true))
+                    using (UpdateDialog notice = new UpdateDialog(new ReleaseUpdate { Version = new Version(FutureVersion), Url = "test" }, true))
                     {
                         notice.Show(); Application.DoEvents(); Button later = null, install = null;
                         foreach (Control control in notice.Controls)
@@ -191,7 +192,7 @@ namespace AutoMacro
                     {
                         if (scenario == 4) throw new UpdateFailure(UpdateService.Network);
                         if (scenario == 0) return null;
-                        return new ReleaseUpdate { Version = new Version(scenario == 1 ? "0.9.0" : scenario == 2 ? AppInfo.Version : "1.1.0") };
+                        return new ReleaseUpdate { Version = new Version(scenario == 1 ? "0.9.0" : scenario == 2 ? AppInfo.Version : FutureVersion) };
                     }
                     finally { Interlocked.Exchange(ref finished, 1); }
                 }))
@@ -209,7 +210,7 @@ namespace AutoMacro
             using (StartupUpdateCheck watcher = new StartupUpdateCheck(owner, delegate { return true; }, delegate { lateNotices++; }, delegate(CancellationToken token)
             {
                 Interlocked.Exchange(ref entered, 1);
-                try { token.WaitHandle.WaitOne(2500); token.ThrowIfCancellationRequested(); return new ReleaseUpdate { Version = new Version("1.1.0") }; }
+                try { token.WaitHandle.WaitOne(2500); token.ThrowIfCancellationRequested(); return new ReleaseUpdate { Version = new Version(FutureVersion) }; }
                 finally { Interlocked.Exchange(ref completed, 1); }
             }))
             {

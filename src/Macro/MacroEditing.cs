@@ -22,7 +22,9 @@ namespace AutoMacro
         {
             SavedMacro result = new SavedMacro { Id = newIdentity ? Guid.NewGuid().ToString("N") : source.Id,
                 Name = source.Name, Created = newIdentity ? DateTime.Now : source.Created, Duration = source.Duration,
-                RepeatCount = source.RepeatCount, RepeatForever = source.RepeatForever, RepeatDelayMs = source.RepeatDelayMs };
+                RepeatCount = source.RepeatCount, RepeatForever = source.RepeatForever, RepeatDelayMs = source.RepeatDelayMs,
+                SpeedPercent = source.SpeedPercent, RunKey = newIdentity ? Keys.None : source.RunKey,
+                Modified = newIdentity ? DateTime.Now : source.Modified, WindowRelative = source.WindowRelative, OriginKnown = source.OriginKnown, RecordedOriginX = source.RecordedOriginX, RecordedOriginY = source.RecordedOriginY };
             foreach (MacroAction action in source.Actions) result.Actions.Add(action.Copy());
             return result;
         }
