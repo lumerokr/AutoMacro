@@ -126,7 +126,23 @@ namespace AutoMacro
         }
         internal static void SignalReady(string folder)
         {
-            File.WriteAllText(Path.Combine(StartupFolder(folder), "ready"), AppInfo.Version);
+            string full = StartupFolder(folder);
+            File.WriteAllText(Path.Combine(full, "ready"), AppInfo.Version);
+            ThreadPool.QueueUserWorkItem(delegate { CleanAfterStartup(full, 120000); });
+        }
+        internal static void CleanAfterStartup(string folder, int timeoutMs)
+        {
+            string full = Path.GetFullPath(folder).TrimEnd(Path.DirectorySeparatorChar);
+            if (!String.Equals(Path.GetDirectoryName(full), Path.GetDirectoryName(typeof(AppInfo).Assembly.Location), StringComparison.OrdinalIgnoreCase) ||
+                !System.Text.RegularExpressions.Regex.IsMatch(Path.GetFileName(full), @"^\.automacro-update-[a-f0-9]{32}$")) return;
+            Stopwatch clock = Stopwatch.StartNew();
+            while (Directory.Exists(full) && clock.ElapsedMilliseconds < timeoutMs)
+            {
+                // The old helper removes this backup only after accepting readiness.
+                // Never remove readiness early or discard a failed update's backup.
+                if (!File.Exists(Path.Combine(full, "previous.exe"))) UpdateService.Clean(full);
+                if (Directory.Exists(full)) Thread.Sleep(250);
+            }
         }
         internal static void CleanCompleted()
         {

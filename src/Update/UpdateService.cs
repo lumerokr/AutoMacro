@@ -207,7 +207,7 @@ namespace AutoMacro
                 { string path = Path.Combine(folder, name); if (File.Exists(path)) File.Delete(path); }
                 Directory.Delete(folder, false);
             }
-            catch { /* A running helper is cleaned by the next application launch. */ }
+            catch { /* The new application retries after the helper releases its image lock. */ }
         }
         internal static string Quote(string path) { return "\"" + path.Replace("\"", "") + "\""; }
         internal static Process LaunchHelper(PreparedUpdate pending)

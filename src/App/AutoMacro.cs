@@ -880,6 +880,7 @@ namespace AutoMacro
             if (updateFolder != null) UpdateInstaller.SetAwaitingUser(updateFolder, true);
             try
             {
+                AppInfo.InitializeDataDirectory();
                 if (!SettingsRecoveryDialog.AllowStartup(AppInfo.SettingsPath)) return false;
                 L.Initialize(AppInfo.SettingsPath);
                 return StartupNotice.AllowStartup(AppInfo.SettingsPath);
@@ -914,7 +915,8 @@ namespace AutoMacro
                 else
                 {
                     UpdateInstaller.CleanCompleted();
-                    if (!PrepareStartup(null)) return 0;
+                    try { if (!PrepareStartup(null)) return 0; }
+                    catch { MessageBox.Show(L.T(UpdateService.Storage) + "\n\n" + AppInfo.DataDirectory, "Auto Macro", MessageBoxButtons.OK, MessageBoxIcon.Error); return 1; }
                     RunMain(new MainForm());
                 }
             }

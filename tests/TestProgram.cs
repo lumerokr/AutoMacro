@@ -9,6 +9,8 @@ namespace AutoMacro
     {
         [STAThread] static int Main(string[] args)
         {
+            // Test processes must never read or write the user's AppData.
+            AppInfo.TestDataDirectory = AppDomain.CurrentDomain.BaseDirectory;
             Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
             if (args.Length > 0 && args[0] == "--ui-test")
             {
@@ -52,6 +54,7 @@ namespace AutoMacro
                         if (!rejected) return 12;
                     }
                     finally { if (File.Exists(testPath)) File.Delete(testPath); }
+                    StorageCleanupTests.Run();
                     MacroTests.Run();
                     return 0;
                 }

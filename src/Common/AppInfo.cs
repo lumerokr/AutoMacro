@@ -7,10 +7,13 @@ namespace AutoMacro
 {
     internal static class AppInfo
     {
-        internal const string AssemblyVersion = "1.0.1.0";
+        internal const string AssemblyVersion = "1.0.2.0";
         internal static string Version { get { return typeof(AppInfo).Assembly.GetName().Version.ToString(3); } }
-        internal static string SettingsPath { get { return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "settings.json"); } }
-        internal static string LibraryPath { get { return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "MacroLibrary.json"); } }
+        internal static string TestDataDirectory;
+        internal static string DataDirectory { get { return TestDataDirectory ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AutoMacro"); } }
+        internal static string SettingsPath { get { return Path.Combine(DataDirectory, "settings.json"); } }
+        internal static string LibraryPath { get { return Path.Combine(DataDirectory, "MacroLibrary.json"); } }
+        internal static void InitializeDataDirectory() { Directory.CreateDirectory(DataDirectory); }
     }
     internal static class RecoveryFiles
     {
