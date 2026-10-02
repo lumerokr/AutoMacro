@@ -130,6 +130,16 @@ namespace AutoMacro
             File.WriteAllText(Path.Combine(full, "ready"), AppInfo.Version);
             ThreadPool.QueueUserWorkItem(delegate { CleanAfterStartup(full, 120000); });
         }
+        internal static ReleaseUpdate ReadStartupNotes(string folder)
+        {
+            try
+            {
+                string path = Path.Combine(StartupFolder(folder), "release-notes.json");
+                if (!File.Exists(path) || new FileInfo(path).Length > 1024 * 1024) return null;
+                return UpdateService.ParseNotesJson(File.ReadAllText(path, System.Text.Encoding.UTF8));
+            }
+            catch { return null; } // Older installers have no cache; fetch the installed release instead.
+        }
         internal static void CleanAfterStartup(string folder, int timeoutMs)
         {
             string full = Path.GetFullPath(folder).TrimEnd(Path.DirectorySeparatorChar);

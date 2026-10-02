@@ -21,7 +21,7 @@ namespace AutoMacro
     internal sealed class ReleaseUpdate
     {
         internal Version Version;
-        internal string Tag, Url, Digest;
+        internal string Tag, Url, Digest, Notes;
         internal long Size;
     }
     internal sealed class PreparedUpdate
@@ -54,7 +54,10 @@ namespace AutoMacro
                 if (root == null || !(root["draft"] is bool) || (bool)root["draft"] || !(root["prerelease"] is bool) || (bool)root["prerelease"]) throw new UpdateFailure(Invalid);
                 string tag = root["tag_name"] as string; Version version = ParseVersion(tag);
                 IList assets = root["assets"] as IList;
-                ReleaseUpdate result = new ReleaseUpdate { Version = version, Tag = tag };
+                object body;
+                root.TryGetValue("body", out body);
+                if (body != null && !(body is string)) throw new UpdateFailure(Invalid);
+                ReleaseUpdate result = new ReleaseUpdate { Version = version, Tag = tag, Notes = body as string ?? "" };
                 if (assets == null) throw new UpdateFailure(Invalid);
                 foreach (object item in assets)
                 {
@@ -87,6 +90,41 @@ namespace AutoMacro
             catch (UpdateFailure) { throw; }
             catch (OperationCanceledException) { throw; }
             catch (Exception) { throw new UpdateFailure(Network); }
+        }
+        internal static ReleaseUpdate ReadInstalledRelease(CancellationToken cancel)
+        {
+            // Latest may have changed since download; show the version actually installed.
+            foreach (string tag in new string[] { "v" + AppInfo.Version, AppInfo.Version })
+            {
+                using (MemoryStream output = new MemoryStream())
+                {
+                    if (!Fetch("https://api.github.com/repos/lumerokr/AutoMacro/releases/tags/" + tag, output, 1024 * 1024, 0, cancel, null, true)) continue;
+                    ReleaseUpdate release = ParseRelease(Encoding.UTF8.GetString(output.ToArray()));
+                    if (release.Version != ParseVersion(AppInfo.Version)) throw new UpdateFailure(Invalid);
+                    return release;
+                }
+            }
+            throw new UpdateFailure(Network);
+        }
+        internal static string NotesJson(ReleaseUpdate release)
+        {
+            return new JavaScriptSerializer { MaxJsonLength = 1024 * 1024 }.Serialize(new Dictionary<string, object> {
+                { "tag", release.Tag ?? "v" + release.Version.ToString(3) }, { "body", release.Notes ?? "" }
+            });
+        }
+        internal static ReleaseUpdate ParseNotesJson(string json)
+        {
+            try
+            {
+                var root = new JavaScriptSerializer { MaxJsonLength = 1024 * 1024 }.DeserializeObject(json) as Dictionary<string, object>;
+                if (root == null || !(root["body"] is string)) throw new UpdateFailure(Invalid);
+                string tag = root["tag"] as string;
+                Version version = ParseVersion(tag);
+                if (version != ParseVersion(AppInfo.Version)) throw new UpdateFailure(Invalid);
+                return new ReleaseUpdate { Tag = tag, Version = version, Notes = (string)root["body"] };
+            }
+            catch (UpdateFailure) { throw; }
+            catch { throw new UpdateFailure(Invalid); }
         }
         static bool AllowedUrl(Uri uri)
         {
@@ -189,6 +227,7 @@ namespace AutoMacro
                 string zip = Path.Combine(folder, AssetName), payload = Path.Combine(folder, "payload.exe");
                 using (Stream file = new FileStream(zip, FileMode.CreateNew, FileAccess.Write)) Fetch(release.Url, file, MaxBytes, release.Size, cancel, progress, false);
                 cancel.ThrowIfCancellationRequested(); Extract(zip, payload, release); cancel.ThrowIfCancellationRequested();
+                File.WriteAllText(Path.Combine(folder, "release-notes.json"), NotesJson(release), new UTF8Encoding(false));
                 string helper = Path.Combine(folder, "installer.exe"); File.Copy(target, helper, false);
                 return new PreparedUpdate { Directory = folder, Target = target, Payload = payload, Helper = helper, Version = release.Version, Hash = Hash(payload), Language = L.Current };
             }
@@ -203,7 +242,7 @@ namespace AutoMacro
             if (folder == null || !Regex.IsMatch(Path.GetFileName(folder), @"^\.automacro-update-[a-f0-9]{32}$")) return;
             try
             {
-                foreach (string name in new string[] { AssetName, "payload.exe", "installer.exe", "ready", "awaiting-user" })
+                foreach (string name in new string[] { AssetName, "payload.exe", "installer.exe", "ready", "awaiting-user", "release-notes.json" })
                 { string path = Path.Combine(folder, name); if (File.Exists(path)) File.Delete(path); }
                 Directory.Delete(folder, false);
             }

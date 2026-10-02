@@ -815,6 +815,19 @@ namespace AutoMacro
                 }
             });
         }
+        internal void ShowUpdateNotes(ReleaseUpdate cached)
+        {
+            if (IsDisposed || Disposing) return;
+            capturing = true; holdTip.Dismiss();
+            if (!macroPage) UnregisterKeys();
+            try { using (UpdateNotesDialog dialog = new UpdateNotesDialog(cached)) dialog.ShowDialog(this); }
+            finally
+            {
+                capturing = false;
+                if (!IsDisposed && !macroPage) hotkeysReady = RegisterKeys(toggleKey, stopKey);
+                if (!IsDisposed) UpdateControls();
+            }
+        }
         void StopMacro(string message)
         {
             if (worker != null)
@@ -911,7 +924,13 @@ namespace AutoMacro
                     // Confirm only after OnShown initialization and the first UI message turn.
                     using (MainForm updated = new MainForm())
                     {
-                        AfterMainShown(updated, delegate { UpdateInstaller.SignalReady(args[1]); });
+                        AfterMainShown(updated, delegate
+                        {
+                            ReleaseUpdate notes = UpdateInstaller.ReadStartupNotes(args[1]);
+                            // Confirm startup before a user can leave the notes dialog open.
+                            UpdateInstaller.SignalReady(args[1]);
+                            updated.BeginInvoke((Action)delegate { if (!updated.IsDisposed) updated.ShowUpdateNotes(notes); });
+                        });
                         RunMain(updated);
                     }
                 }

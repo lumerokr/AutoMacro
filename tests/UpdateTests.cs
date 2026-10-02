@@ -32,6 +32,26 @@ namespace AutoMacro
             var asset = Asset("v1.1.0"); var root = new Dictionary<string, object> { { "tag_name", "v1.1.0" }, { "draft", false }, { "prerelease", false }, { "assets", new object[] { asset } } };
             ReleaseUpdate release = UpdateService.ParseRelease(serializer.Serialize(root));
             Check(release.Version.ToString(3) == "1.1.0" && release.Url != null, "release asset accepted");
+            Check(release.Notes == "", "old release without notes accepted");
+            root["body"] = "## Changes\n- Unicode: 한국어 / 日本語\nhttps://example.com";
+            Check(UpdateService.ParseRelease(serializer.Serialize(root)).Notes == (string)root["body"], "release notes remain plain text and preserve Unicode");
+            root["body"] = 123; Reject(delegate { UpdateService.ParseRelease(serializer.Serialize(root)); }, "non-text release notes rejected");
+            root["body"] = null; Check(UpdateService.ParseRelease(serializer.Serialize(root)).Notes == "", "null release notes accepted");
+            ReleaseUpdate installed = new ReleaseUpdate { Version = UpdateService.ParseVersion(AppInfo.Version), Tag = "v" + AppInfo.Version, Notes = "# Updated\n한국어 日本語" };
+            Check(UpdateService.ParseNotesJson(UpdateService.NotesJson(installed)).Notes == installed.Notes, "cached notes round trip");
+            Reject(delegate { UpdateService.ParseNotesJson(UpdateService.NotesJson(new ReleaseUpdate { Version = new Version(FutureVersion), Notes = "wrong release" })); }, "cache version must match installed executable");
+            Reject(delegate { UpdateService.ParseNotesJson("{}"); }, "broken cached notes rejected");
+            foreach (string title in new string[] { "### 다운로드", "## 안내", "## Downloads", "### Notice", "## downloads ##", "다운로드", "Notice", "## ダウンロード" })
+                Check(UpdateNotesDialog.ChangesOnly("# Changes\n- Fixed input\n\n" + title + "\nhidden download or notice").Replace("\r", "") == "# Changes\n- Fixed input", "notes cutoff: " + title);
+            Check(UpdateNotesDialog.ChangesOnly("- Downloads were fixed\n## Notice handling\nKeep this").Contains("Keep this"), "cutoff matches section titles only");
+            Check(UpdateNotesDialog.ChangesOnly("```text\n## Downloads\n```\nKeep this\n## Notice\nhidden").Contains("Keep this"), "code blocks do not trigger cutoff");
+            Check(UpdateNotesDialog.ChangesOnly(null) == "" && UpdateNotesDialog.ChangesOnly("## Downloads\nasset links") == "", "empty changelog handled");
+            string bilingual = "# 한국어\n\n### Auto Macro 1.1.0\n\n### 업데이트\n\n- 한국어 변경 내역\n\n### 다운로드\n- 파일\n### 안내\n- 안내 문구\n\n# English\n\n### Auto Macro 1.1.0\n\n### Update\n\n- English changes\n\n### Downloads\n- assets\n### Notice\n- notice text";
+            string koreanChanges = UpdateNotesDialog.ChangesOnly(bilingual, "ko"), englishChanges = UpdateNotesDialog.ChangesOnly(bilingual, "en");
+            Check(koreanChanges.Contains("한국어 변경 내역") && !koreanChanges.Contains("다운로드") && !koreanChanges.Contains("English"), "Korean release section only");
+            Check(englishChanges.Contains("English changes") && !englishChanges.Contains("Downloads") && !englishChanges.Contains("한국어"), "English release section only");
+            Check(UpdateNotesDialog.ChangesOnly(bilingual, "ja") == englishChanges, "missing Japanese notes fall back to English");
+            Check(UpdateNotesDialog.ChangesOnly(bilingual + "\n# 日本語\n### 更新\n- 日本語の変更\n### ダウンロード\n- ファイル", "ja").Contains("日本語の変更"), "Japanese section supported when provided");
             root["draft"] = true; Reject(delegate { UpdateService.ParseRelease(serializer.Serialize(root)); }, "draft excluded"); root["draft"] = false;
             root["prerelease"] = true; Reject(delegate { UpdateService.ParseRelease(serializer.Serialize(root)); }, "prerelease excluded"); root["prerelease"] = false;
             root["assets"] = new object[] { asset, asset }; Reject(delegate { UpdateService.ParseRelease(serializer.Serialize(root)); }, "duplicate asset rejected"); root["assets"] = new object[] { asset };
@@ -102,6 +122,13 @@ namespace AutoMacro
             try
             {
                 File.WriteAllText(Path.Combine(stage, "previous.exe"), "startup marker test");
+                Check(UpdateInstaller.ReadStartupNotes(stage) == null, "older installer has no cached notes");
+                string notesPath = Path.Combine(stage, "release-notes.json");
+                File.WriteAllText(notesPath, UpdateService.NotesJson(new ReleaseUpdate { Version = new Version(AppInfo.Version), Notes = "cached before ready" }));
+                ReleaseUpdate cached = UpdateInstaller.ReadStartupNotes(stage);
+                Check(cached != null && cached.Notes == "cached before ready", "cache read before helper cleanup");
+                File.WriteAllText(notesPath, "broken"); Check(UpdateInstaller.ReadStartupNotes(stage) == null, "broken cache falls back to fetch without failing startup");
+                File.Delete(notesPath); Check(cached.Notes == "cached before ready", "in-memory notes survive cleanup");
                 UpdateInstaller.SetAwaitingUser(stage, true);
                 Check(File.Exists(Path.Combine(stage, "awaiting-user")) && !File.Exists(Path.Combine(stage, "ready")), "user notice does not confirm installation");
                 UpdateInstaller.SetAwaitingUser(stage, false);
@@ -164,9 +191,48 @@ namespace AutoMacro
                         Check(later != null, "startup notice has later button"); later.PerformClick();
                         Check(notice.DialogResult == DialogResult.Cancel && notice.Prepared == null, "later closes without preparing update");
                     }
+                    using (UpdateNotesDialog notes = new UpdateNotesDialog(new ReleaseUpdate { Version = new Version(AppInfo.Version), Notes = "# Unicode\n한국어 日本語" }, delegate { throw new Exception("Cached notes must not use the network"); }))
+                    {
+                        notes.Show(); Application.DoEvents();
+                        Check(notes.Text == L.T("업데이트 완료"), "localized release notes title");
+                        RichTextBox text = null; Button close = null;
+                        foreach (Control control in notes.Controls) { if (control is RichTextBox) text = (RichTextBox)control; if (control is Button && control.Text == L.T("닫기")) close = (Button)control; }
+                        Check(text != null && text.ReadOnly && !text.DetectUrls && text.Text.Contains("한국어 日本語") && text.BackColor == Theme.Background, "read-only themed cached release notes");
+                        Check(close != null, "release notes can be dismissed"); close.PerformClick();
+                    }
                 }
             }
             finally { L.Current = language; }
+            VerifyNotesFetch();
+        }
+        static void VerifyNotesFetch()
+        {
+            int calls = 0;
+            using (UpdateNotesDialog notes = new UpdateNotesDialog(null, delegate(CancellationToken token)
+            {
+                if (Interlocked.Increment(ref calls) == 1) throw new UpdateFailure(UpdateService.Network);
+                return new ReleaseUpdate { Version = new Version(AppInfo.Version), Notes = "fetched release notes" };
+            }))
+            {
+                notes.Show(); Button retry = null; RichTextBox text = null;
+                foreach (Control control in notes.Controls) { if (control is Button && control.Text == L.T("다시 시도")) retry = (Button)control; if (control is RichTextBox) text = (RichTextBox)control; }
+                Check(retry != null && text != null, "retry and notes controls present");
+                PumpUntil(delegate { return retry.Visible && retry.Enabled; }, "network failure allows retry");
+                retry.PerformClick(); PumpUntil(delegate { return text.Text == "fetched release notes"; }, "notes retry succeeds");
+                Check(calls == 2 && !retry.Visible, "successful retry displays installed version notes"); notes.Close();
+            }
+            int entered = 0, cancelled = 0;
+            using (UpdateNotesDialog notes = new UpdateNotesDialog(null, delegate(CancellationToken token)
+            {
+                Interlocked.Exchange(ref entered, 1);
+                token.WaitHandle.WaitOne(2500);
+                if (token.IsCancellationRequested) Interlocked.Exchange(ref cancelled, 1);
+                token.ThrowIfCancellationRequested(); return null;
+            }))
+            {
+                notes.Show(); PumpUntil(delegate { return entered == 1; }, "notes fetch begins"); notes.Close();
+                PumpUntil(delegate { return cancelled == 1; }, "closing notes cancels network request");
+            }
         }
         static void PumpUntil(Func<bool> condition, string name)
         {

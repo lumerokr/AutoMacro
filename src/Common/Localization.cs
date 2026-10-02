@@ -95,6 +95,15 @@ namespace AutoMacro
         }
         internal static readonly Dictionary<string, string[]> Messages = new Dictionary<string, string[]>
         {
+            { "업데이트 완료", new string[] { "Update complete", "更新完了" } },
+            { "업데이트 내용을 불러오고 있습니다.", new string[] { "Loading release notes...", "更新内容を読み込んでいます。" } },
+            { "업데이트가 완료되었습니다. 변경 내용을 확인하세요.", new string[] { "The update is complete. Review the changes below.", "更新が完了しました。変更内容をご確認ください。" } },
+            { "이 버전에는 등록된 업데이트 내용이 없습니다.", new string[] { "No release notes were provided for this version.", "このバージョンには更新内容が登録されていません。" } },
+            { "업데이트 내용만 불러오지 못했습니다. 프로그램은 정상적으로 사용할 수 있습니다.", new string[] { "Could not load release notes. The application is ready to use.", "更新内容を読み込めませんでした。プログラムは通常どおり使用できます。" } },
+            { "릴리스 페이지", new string[] { "Release page", "リリースページ" } },
+            { "릴리스 페이지를 열지 못했습니다.", new string[] { "Could not open the release page.", "リリースページを開けませんでした。" } },
+            { "다시 시도", new string[] { "Retry", "再試行" } },
+            { "닫기", new string[] { "Close", "閉じる" } },
             { "재생 매크로: {0}", new string[] { "Playing macro: {0}", "再生マクロ: {0}" } },
             { "재생 속도 {0}배", new string[] { "Playback speed {0}×", "再生速度 {0}倍" } },
             { "검색", new string[] { "Search", "検索" } },
